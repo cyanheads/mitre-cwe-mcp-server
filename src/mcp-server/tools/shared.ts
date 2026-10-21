@@ -55,7 +55,9 @@ export const pagingShape = {
     .min(1)
     .max(1000)
     .default(20)
-    .describe('Page size; values above 100 are capped with disclosure.'),
+    .describe(
+      'Maximum page size; capped at 100 and a 24,000-byte response budget with disclosure.',
+    ),
   cursor: text('Opaque continuation returned by this tool.').optional(),
 };
 /** Normalize syntactically valid catalog identifiers without assuming membership. */
@@ -81,7 +83,7 @@ export function batchIds(values: readonly string[], prefix: 'CWE' | 'CAPEC') {
 /** Shared submitted-ID ceiling; normalization retains first-submitted order. */
 export const idsSchema = list(
   text('A prefixed catalog ID or positive bare integer.'),
-  'One to 200 submitted IDs; first 20 distinct IDs are processed.',
+  'One to 200 submitted IDs; up to 20 distinct IDs are processed within the response budget.',
 )
   .min(1)
   .max(200);
@@ -103,6 +105,7 @@ export function pageItems<T>(
   input: { limit: number; cursor?: string | undefined },
   binding: unknown,
   provenance: Provenance,
+  measure?: (page: CatalogPage<T>) => number,
 ) {
   const query = fingerprint([binding, provenance]);
   let offset = 0;
@@ -137,23 +140,84 @@ export function pageItems<T>(
     }
   }
   const limit = Math.min(input.limit, 100);
-  const result = items.slice(offset, offset + limit);
-  const next = offset + result.length;
-  const body = Buffer.from(JSON.stringify({ query, offset: next })).toString('base64url');
+  const maximum = Math.min(limit, Math.max(0, items.length - offset));
+  const build = (count: number, oversized = false): CatalogPage<T> => {
+    const result = items.slice(offset, offset + count);
+    const next = offset + result.length;
+    const body = Buffer.from(JSON.stringify({ query, offset: next })).toString('base64url');
+    const notice = [
+      ...(input.limit > 100
+        ? ['The requested limit was capped at 100 items; follow nextCursor for the remainder.']
+        : []),
+      ...(count < maximum
+        ? [
+            'The 24,000-byte response budget reduced this page; follow nextCursor for the remainder.',
+          ]
+        : []),
+      ...(oversized
+        ? [
+            'One complete item and its metadata exceed the 24,000-byte response budget; returned intact to preserve forward progress.',
+          ]
+        : []),
+    ].join(' ');
+    return {
+      items: result,
+      pagination: {
+        total: items.length,
+        shown: result.length,
+        hasMore: next < items.length,
+        ...(next < items.length ? { nextCursor: `${body}.${sign(body)}` } : {}),
+      },
+      ...(notice ? { notice } : {}),
+    };
+  };
+  return selectWithinBudget(
+    maximum,
+    (count) => build(count),
+    measure,
+    () => build(Math.min(1, maximum), true),
+  );
+}
+
+/** Whole ordered page and its lossless continuation. */
+export interface CatalogPage<T> {
+  items: T[];
+  notice?: string;
+  pagination: { total: number; shown: number; hasMore: boolean; nextCursor?: string };
+}
+
+/** Target for the serialized MCP result, excluding its JSON-RPC framing. */
+export const RESPONSE_BUDGET = 24_000;
+
+/** Select a whole prefix; an indivisible first item always makes forward progress. */
+export function selectWithinBudget<T>(
+  maximum: number,
+  build: (count: number) => T,
+  measure: ((result: T) => number) | undefined,
+  oversized: () => T,
+): T {
+  for (let count = maximum; count >= Math.min(1, maximum); count--) {
+    const result = build(count);
+    if (!measure || measure(result) <= RESPONSE_BUDGET) return result;
+  }
+  return oversized();
+}
+
+/** Enrichment shared by all paged tools, measured before it reaches either surface. */
+export function pageEnrichment<T, F>(
+  page: CatalogPage<T>,
+  limit: number,
+  appliedFilters: F,
+  notice?: string,
+) {
+  const disclosure = [page.notice, notice].filter(Boolean).join(' ');
   return {
-    items: result,
-    pagination: {
-      total: items.length,
-      shown: result.length,
-      hasMore: next < items.length,
-      ...(next < items.length ? { nextCursor: `${body}.${sign(body)}` } : {}),
-    },
-    ...(input.limit > 100
-      ? {
-          notice:
-            'The requested limit was capped at 100 items; follow nextCursor for the remainder.',
-        }
+    totalCount: page.pagination.total,
+    appliedFilters,
+    ...(page.pagination.hasMore
+      ? { truncated: true, shown: page.items.length, cap: Math.min(limit, 100) }
       : {}),
+    ...(disclosure ? { notice: disclosure } : {}),
   };
 }
 
@@ -170,6 +234,7 @@ function fence(value: string): string {
 const proseFields = new Set([
   'description',
   'descriptionPreview',
+  'notice',
   'extendedDescription',
   'note',
   'comments',
@@ -219,4 +284,44 @@ function render(value: unknown, field = ''): string {
 /** Render every selected field without slicing, executing HTML, or hiding code. */
 export function formatCatalog(result: unknown): [{ type: 'text'; text: string }] {
   return [{ type: 'text' as const, text: render(result) }];
+}
+
+function renderEnrichment(key: string, value: unknown): string {
+  // Close the final Markdown container so the framework joins every field identically.
+  return `${key === 'totalCount' ? `**${String(value)} total**` : formatCatalog({ [key]: value })[0].text}\n\n`;
+}
+/** The same explicit enrichment renderers drive delivery and byte accounting. */
+export const catalogEnrichmentTrailer = Object.fromEntries(
+  ['totalCount', 'appliedFilters', 'truncated', 'shown', 'cap', 'notice'].map((key) => [
+    key,
+    { render: (value: unknown) => renderEnrichment(key, value) },
+  ]),
+);
+/** Detail tools have no applied-filter echo. */
+export const detailEnrichmentTrailer = Object.fromEntries(
+  Object.entries(catalogEnrichmentTrailer).filter(([key]) => key !== 'appliedFilters'),
+);
+
+/** Measure both complete MCP surfaces, including the enrichment trailer. */
+export function deliveredSize(
+  domain: Record<string, unknown>,
+  enrichment: Record<string, unknown>,
+): number {
+  const fields = Object.entries(enrichment).filter(([, value]) => value !== undefined);
+  const content = formatCatalog(domain);
+  const trailer = fields.length
+    ? [
+        {
+          type: 'text',
+          text: `\n\n${fields.map(([key, value]) => renderEnrichment(key, value)).join('\n')}`,
+        },
+      ]
+    : [];
+  return Buffer.byteLength(
+    JSON.stringify({
+      structuredContent: { ...domain, ...enrichment },
+      content: [...content, ...trailer],
+    }),
+    'utf8',
+  );
 }

@@ -11,18 +11,24 @@ import {
   searchAttackPatterns,
 } from '@/services/index.js';
 import {
+  type CatalogPage,
+  catalogEnrichmentTrailer,
+  deliveredSize,
   formatCatalog,
   list,
   normalizeAttackId,
   normalizeId,
   optionalInputEnum,
   optionalText,
+  pageEnrichment,
   pageItems,
   paginationSchema,
   pagingShape,
   provenanceSchema,
   text,
 } from '../shared.js';
+
+const sentenceSegmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
 
 /** Search source CAPEC patterns without treating missing mappings as negative evidence. */
 export const cweSearchAttackPatterns = tool('cwe_search_attack_patterns', {
@@ -34,9 +40,11 @@ export const cweSearchAttackPatterns = tool('cwe_search_attack_patterns', {
     filter: text('All-token case-insensitive name and description filter; blank means unset.')
       .max(500)
       .optional(),
-    cweId: text('Exact recorded CWE mapping, CWE-N or bare integer; blank means unset.').optional(),
+    cweId: text(
+      'Exact recorded CWE mapping, CWE-N or bare integer from cwe_search_weaknesses; blank means unset.',
+    ).optional(),
     attackTechniqueId: text(
-      'Recorded Tdddd or Tdddd.ddd mapping, also accepting bare numeric form; blank means unset.',
+      'Recorded Tdddd or Tdddd.ddd mapping from cwe_get_attack_pattern mappings, also accepting bare numeric form; blank means unset.',
     ).optional(),
     abstraction: optionalInputEnum(['Meta', 'Standard', 'Detailed']).describe(
       'Exact CAPEC abstraction; blank means unset.',
@@ -101,9 +109,7 @@ export const cweSearchAttackPatterns = tool('cwe_search_attack_patterns', {
     shown: z.number().int().describe('Page item count.').optional(),
     cap: z.number().int().describe('Effective limit.').optional(),
   },
-  enrichmentTrailer: {
-    appliedFilters: { render: (filters) => formatCatalog({ appliedFilters: filters })[0].text },
-  },
+  enrichmentTrailer: catalogEnrichmentTrailer,
   errors: [
     {
       reason: 'unknown_filter',
@@ -139,23 +145,7 @@ export const cweSearchAttackPatterns = tool('cwe_search_attack_patterns', {
     if (cweId) filters.cweId = normalizeId(cweId, 'CWE');
     if (attackTechniqueId) filters.attackTechniqueId = normalizeAttackId(attackTechniqueId);
     const matches = searchAttackPatterns(snapshot, filters);
-    const page = pageItems(
-      matches,
-      input,
-      ['cwe_search_attack_patterns', filters, Math.min(input.limit, 100)],
-      snapshot.provenance,
-    );
-    ctx.enrich.total(matches.length);
-    ctx.enrich({
-      appliedFilters: {
-        ...filters,
-        includeInactive: input.includeInactive,
-        limit: Math.min(input.limit, 100),
-      },
-    });
-    if (page.pagination.hasMore)
-      ctx.enrich.truncated({ shown: page.items.length, cap: Math.min(input.limit, 100) });
-    const notices = page.notice ? [page.notice] : [];
+    const notices: string[] = [];
     if (!matches.length) {
       notices.push(
         filters.cweId || filters.attackTechniqueId
@@ -171,30 +161,45 @@ export const cweSearchAttackPatterns = tool('cwe_search_attack_patterns', {
           'Repeat cwe_search_attack_patterns with includeInactive true to include Deprecated and Obsolete patterns.',
         );
     }
-    if (notices.length) ctx.enrich.notice(notices.join(' '));
-    return {
-      results: page.items.map((entry) => ({
-        id: entry.id,
-        name: entry.name,
-        abstraction: entry.abstraction,
-        status: entry.status,
-        sourceUrl: entry.sourceUrl,
-        descriptionPreview:
-          [
-            ...new Intl.Segmenter('en', { granularity: 'sentence' }).segment(entry.description),
-          ][0]?.segment.trim() ?? entry.description,
-        ...(entry.typicalSeverity !== undefined ? { severity: entry.typicalSeverity } : {}),
-        ...(entry.likelihoodOfAttack !== undefined ? { likelihood: entry.likelihoodOfAttack } : {}),
-        ...(entry.relatedWeaknesses !== undefined
-          ? { relatedWeaknesses: entry.relatedWeaknesses.map((item) => ({ ...item })) }
-          : {}),
-        ...(entry.attackTechniqueIds !== undefined
-          ? { attackTechniqueIds: [...entry.attackTechniqueIds] }
-          : {}),
-      })),
+    const previews = matches.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      abstraction: entry.abstraction,
+      status: entry.status,
+      sourceUrl: entry.sourceUrl,
+      descriptionPreview:
+        sentenceSegmenter.segment(entry.description).containing(0)?.segment.trim() ??
+        entry.description,
+      ...(entry.typicalSeverity !== undefined ? { severity: entry.typicalSeverity } : {}),
+      ...(entry.likelihoodOfAttack !== undefined ? { likelihood: entry.likelihoodOfAttack } : {}),
+      ...(entry.relatedWeaknesses !== undefined
+        ? { relatedWeaknesses: entry.relatedWeaknesses.map((item) => ({ ...item })) }
+        : {}),
+      ...(entry.attackTechniqueIds !== undefined
+        ? { attackTechniqueIds: [...entry.attackTechniqueIds] }
+        : {}),
+    }));
+    const output = (page: CatalogPage<(typeof previews)[number]>) => ({
+      results: page.items,
       pagination: page.pagination,
       provenance: snapshot.provenance,
-    };
+    });
+    const enrichment = (page: CatalogPage<(typeof previews)[number]>) =>
+      pageEnrichment(
+        page,
+        input.limit,
+        { ...filters, includeInactive: input.includeInactive, limit: Math.min(input.limit, 100) },
+        notices.join(' '),
+      );
+    const page = pageItems(
+      previews,
+      input,
+      ['cwe_search_attack_patterns', filters, Math.min(input.limit, 100)],
+      snapshot.provenance,
+      (candidate) => deliveredSize(output(candidate), enrichment(candidate)),
+    );
+    ctx.enrich(enrichment(page));
+    return output(page);
   },
   format: formatCatalog,
 });

@@ -389,30 +389,59 @@ describe('complete local search and view contracts', () => {
     for (const wire of [w, a, v]) {
       expect(wire.isError).not.toBe(true);
       expect(wire.structuredContent).toMatchObject({
-        pagination: { shown: 100, hasMore: true },
+        pagination: { hasMore: true },
         truncated: true,
-        shown: 100,
         cap: 100,
         notice: expect.stringContaining('capped at 100'),
       });
       expect(JSON.stringify(wire.content)).toContain('capped at 100');
     }
-    const first = await search({ filter: 'Bulk', limit: 1000 });
-    const last = await search({ filter: 'Bulk', limit: 1000, cursor: first.pagination.nextCursor });
-    expect(last.results.map((row) => row.id)).toEqual([
-      'CWE-300',
-      'CWE-301',
-      'CWE-302',
-      'CWE-303',
-      'CWE-304',
-    ]);
-    expect(last.pagination.hasMore).toBe(false);
-    const direct = await view({ id: '1000', limit: 100 });
-    expect(
-      (await view({ id: '1000', limit: 100, cursor: direct.pagination.nextCursor })).members.map(
-        (row) => row.id,
-      ),
-    ).toEqual(Array.from({ length: 8 }, (_, index) => `CWE-${207 - index}`));
+    for (const kind of ['weakness', 'attack', 'view'] as const) {
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const args = { filter: 'Bulk', limit: 101, cursor };
+        const wire =
+          kind === 'weakness'
+            ? await runToolContract(cweSearchWeaknesses, args)
+            : kind === 'attack'
+              ? await runToolContract(cweSearchAttackPatterns, args)
+              : await runToolContract(cweGetView, { id: '1000', limit: 101, cursor });
+        expect(wire.isError).not.toBe(true);
+        expect(Buffer.byteLength(JSON.stringify(wire))).toBeLessThanOrEqual(24000);
+        const data = wire.structuredContent as {
+          results?: { id: string }[];
+          members?: { id: string }[];
+          totalCount: number;
+          pagination: { total: number; shown: number; nextCursor?: string };
+        };
+        const rows = data.results ?? data.members ?? [];
+        const total = kind === 'view' ? 108 : 105;
+        expect(data.pagination.total).toBe(total);
+        expect(data.totalCount).toBe(total);
+        expect(data.pagination.shown).toBe(rows.length);
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows.length).toBeLessThanOrEqual(100);
+        for (const row of rows)
+          expect(JSON.stringify(wire.content).replace(/\\/g, '')).toContain(row.id);
+        seen.push(...rows.map((row) => row.id));
+        cursor = data.pagination.nextCursor;
+        expect(seen.length).toBeLessThanOrEqual(total);
+      } while (cursor);
+      expect(seen).toEqual(
+        kind === 'view'
+          ? [
+              'CWE-900',
+              'CWE-30',
+              'CWE-10',
+              ...Array.from({ length: 105 }, (_, i) => `CWE-${304 - i}`),
+            ]
+          : Array.from(
+              { length: 105 },
+              (_, i) => `${kind === 'weakness' ? 'CWE' : 'CAPEC'}-${200 + i}`,
+            ),
+      );
+    }
     for (const [definition, args] of [
       [cweSearchWeaknesses, {}],
       [cweSearchAttackPatterns, {}],

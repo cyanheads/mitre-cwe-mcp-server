@@ -142,7 +142,13 @@ export function orderedContentToMarkdown(nodes: readonly OrderedNode[]): string 
         if (name === 'li') return inList ? inner : `\n- ${inner.trim()}\n`;
         if (name === 'a') {
           const href = attribute(node, 'href');
-          return href ? `[${inner.trim()}](<${href.replace(/&/g, '&amp;')}>)` : inner;
+          if (!href) return inner;
+          if (!/^https?:\/\//i.test(href) || !URL.canParse(href))
+            return `${inner.trim()} (${escapeText(href)})`;
+          const destination = href
+            .replace(/[\\<>\s]/g, (character) => encodeURIComponent(character))
+            .replace(/&/g, '&amp;');
+          return `[${inner.trim()}](<${destination}>)`;
         }
         if (name === 'b' || name === 'strong') return `**${inner.trim()}**`;
         if (name === 'i' || name === 'em') return `*${inner.trim()}*`;

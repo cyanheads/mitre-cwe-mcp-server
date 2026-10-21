@@ -6,10 +6,14 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { type CatalogSnapshot, getCatalogService } from '@/services/index.js';
 import {
+  type CatalogPage,
+  catalogEnrichmentTrailer,
+  deliveredSize,
   formatCatalog,
   inputEnum,
   list,
   optionalText,
+  pageEnrichment,
   pageItems,
   paginationSchema,
   pagingShape,
@@ -185,7 +189,9 @@ export const cweListReference = tool('cwe_list_reference', {
     'List loaded CWE/CAPEC vocabulary, every CWE view, workflow guidance, or catalog versions and refresh health. Filter requires every whitespace-separated token in an item label; omit filter to browse. Platforms distinguishes example code languages from platform names and classes. Follow nextCursor for complete lists; limits above 100 are capped with disclosure.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    topic: inputEnum(referenceTopics).describe('Reference topic.'),
+    topic: inputEnum(referenceTopics).describe(
+      'views lists CWE view IDs; abstraction_levels explains CWE and CAPEC levels; mitigation_phases lists prevention phases; platforms lists platform dimensions and exampleLanguages; relationship_natures lists relation labels; filter_values lists statuses, consequence impacts, severity, and likelihood; workflow explains navigation; versions reports catalog freshness and refresh health.',
+    ),
     filter: text('All-token case-insensitive label filter; blank means unset.').max(500).optional(),
     ...pagingShape,
   }),
@@ -210,9 +216,7 @@ export const cweListReference = tool('cwe_list_reference', {
     shown: z.number().int().describe('Reference items on this page.').optional(),
     cap: z.number().int().describe('Effective page limit.').optional(),
   },
-  enrichmentTrailer: {
-    appliedFilters: { render: (filters) => formatCatalog({ appliedFilters: filters })[0].text },
-  },
+  enrichmentTrailer: catalogEnrichmentTrailer,
   errors: [
     {
       reason: 'invalid_cursor',
@@ -229,34 +233,7 @@ export const cweListReference = tool('cwe_list_reference', {
     const items = referenceItems(snapshot, input.topic).filter((item) =>
       terms.every((term) => item.label.toLowerCase().includes(term)),
     );
-    const page = pageItems(
-      items,
-      input,
-      ['cwe_list_reference', input.topic, filter ?? null, Math.min(input.limit, 100)],
-      snapshot.provenance,
-    );
-    ctx.enrich.total(items.length);
-    if (page.pagination.hasMore)
-      ctx.enrich.truncated({ shown: page.items.length, cap: Math.min(input.limit, 100) });
-    const notice = [
-      page.notice,
-      ...(!items.length
-        ? [
-            'No reference item matched every filter token. Repeat cwe_list_reference without filter or with fewer terms.',
-          ]
-        : []),
-    ]
-      .filter(Boolean)
-      .join(' ');
-    ctx.enrich({
-      appliedFilters: {
-        topic: input.topic,
-        ...(filter ? { filter } : {}),
-        limit: Math.min(input.limit, 100),
-      },
-    });
-    if (notice) ctx.enrich.notice(notice);
-    return {
+    const output = (page: CatalogPage<(typeof items)[number]>) => ({
       topic: input.topic,
       items: page.items,
       pagination: page.pagination,
@@ -269,7 +246,25 @@ export const cweListReference = tool('cwe_list_reference', {
             })),
           }
         : {}),
-    };
+    });
+    const enrichment = (page: CatalogPage<(typeof items)[number]>) =>
+      pageEnrichment(
+        page,
+        input.limit,
+        { topic: input.topic, ...(filter ? { filter } : {}), limit: Math.min(input.limit, 100) },
+        !items.length
+          ? 'No reference item matched every filter token. Repeat cwe_list_reference without filter or with fewer terms.'
+          : undefined,
+      );
+    const page = pageItems(
+      items,
+      input,
+      ['cwe_list_reference', input.topic, filter ?? null, Math.min(input.limit, 100)],
+      snapshot.provenance,
+      (candidate) => deliveredSize(output(candidate), enrichment(candidate)),
+    );
+    ctx.enrich(enrichment(page));
+    return output(page);
   },
   format: formatCatalog,
 });

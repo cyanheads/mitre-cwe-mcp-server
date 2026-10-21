@@ -6,10 +6,14 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCatalogService, getHierarchyService, HIERARCHY_RECOVERY } from '@/services/index.js';
 import {
+  type CatalogPage,
+  catalogEnrichmentTrailer,
+  deliveredSize,
   formatCatalog,
   inputEnum,
   list,
   normalizeId,
+  pageEnrichment,
   pageItems,
   paginationSchema,
   pagingShape,
@@ -99,9 +103,7 @@ export const cweGetHierarchy = tool('cwe_get_hierarchy', {
     shown: z.number().int().describe('Returned edge count.').optional(),
     cap: z.number().int().describe('Effective edge page cap.').optional(),
   },
-  enrichmentTrailer: {
-    appliedFilters: { render: (filters) => formatCatalog({ appliedFilters: filters })[0].text },
-  },
+  enrichmentTrailer: catalogEnrichmentTrailer,
   errors: [
     {
       reason: 'invalid_hierarchy_options',
@@ -120,7 +122,7 @@ export const cweGetHierarchy = tool('cwe_get_hierarchy', {
     {
       reason: 'queue_full',
       code: JsonRpcErrorCode.RateLimited,
-      when: 'Four requests are active and twenty callers are queued.',
+      when: 'The live hierarchy service has no available request slot.',
       recovery:
         'Call cwe_get_weakness for recorded relations, then retry cwe_get_hierarchy after the active requests finish.',
       retryable: true,
@@ -146,43 +148,49 @@ export const cweGetHierarchy = tool('cwe_get_hierarchy', {
       throw ctx.fail('invalid_hierarchy_options');
     const query = { id, direction: input.direction, viewId, primaryOnly: input.primaryOnly };
     const result = await getHierarchyService().getHierarchy(query, snapshot, ctx);
+    const output = (page: CatalogPage<(typeof result.edges)[number]>) => {
+      const endpoints = new Set(
+        page.items.flatMap((edge) => [
+          `${edge.viewId}:${edge.parentId}`,
+          `${edge.viewId}:${edge.childId}`,
+        ]),
+      );
+      const nodes = result.nodes.filter(
+        (node) => endpoints.has(`${node.viewId}:${node.id}`) || node.id === id,
+      );
+      return {
+        ...query,
+        found: result.found,
+        nodes: nodes.map((node) => ({ ...node })),
+        edges: page.items.map((edge) => ({ ...edge })),
+        pagination: page.pagination,
+        retrievedAt: result.retrievedAt,
+        hierarchyFingerprint: result.hierarchyFingerprint,
+        provenance: snapshot.provenance,
+        ...(!result.found
+          ? {
+              guidance:
+                'Call cwe_search_weaknesses to find an existing CWE ID, then repeat cwe_get_hierarchy.',
+            }
+          : {}),
+      };
+    };
+    const enrichment = (page: CatalogPage<(typeof result.edges)[number]>) =>
+      pageEnrichment(
+        page,
+        input.limit,
+        { ...query, limit: Math.min(input.limit, 100) },
+        result.notice,
+      );
     const page = pageItems(
       result.edges,
       input,
       ['cwe_get_hierarchy', query, Math.min(input.limit, 100), result.hierarchyFingerprint],
       snapshot.provenance,
+      (candidate) => deliveredSize(output(candidate), enrichment(candidate)),
     );
-    const endpoints = new Set(
-      page.items.flatMap((edge) => [
-        `${edge.viewId}:${edge.parentId}`,
-        `${edge.viewId}:${edge.childId}`,
-      ]),
-    );
-    const nodes = result.nodes.filter(
-      (node) => endpoints.has(`${node.viewId}:${node.id}`) || node.id === id,
-    );
-    ctx.enrich({ appliedFilters: { ...query, limit: Math.min(input.limit, 100) } });
-    ctx.enrich.total(page.pagination.total);
-    if (page.pagination.hasMore)
-      ctx.enrich.truncated({ shown: page.items.length, cap: Math.min(input.limit, 100) });
-    const notice = [page.notice, result.notice].filter(Boolean).join(' ');
-    if (notice) ctx.enrich.notice(notice);
-    return {
-      ...query,
-      found: result.found,
-      nodes: nodes.map((node) => ({ ...node })),
-      edges: page.items.map((edge) => ({ ...edge })),
-      pagination: page.pagination,
-      retrievedAt: result.retrievedAt,
-      hierarchyFingerprint: result.hierarchyFingerprint,
-      provenance: snapshot.provenance,
-      ...(!result.found
-        ? {
-            guidance:
-              'Call cwe_search_weaknesses to find an existing CWE ID, then repeat cwe_get_hierarchy.',
-          }
-        : {}),
-    };
+    ctx.enrich(enrichment(page));
+    return output(page);
   },
   format: formatCatalog,
 });

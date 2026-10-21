@@ -352,6 +352,7 @@ export class HierarchyService {
       );
     } catch (cause) {
       const error = signal.aborted ? signal.reason : cause;
+      if (error instanceof McpError && error.data?.reason === 'queue_full') throw error;
       if (error instanceof McpError)
         throw new McpError(
           error.code,

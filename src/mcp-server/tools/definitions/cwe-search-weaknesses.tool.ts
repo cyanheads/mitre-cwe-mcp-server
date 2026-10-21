@@ -11,17 +11,23 @@ import {
   type WeaknessFilters,
 } from '@/services/index.js';
 import {
+  type CatalogPage,
+  catalogEnrichmentTrailer,
+  deliveredSize,
   formatCatalog,
   list,
   normalizeId,
   optionalInputEnum,
   optionalText,
+  pageEnrichment,
   pageItems,
   paginationSchema,
   pagingShape,
   provenanceSchema,
   text,
 } from '../shared.js';
+
+const sentenceSegmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
 
 const filtersShape = {
   filter: text(
@@ -45,7 +51,7 @@ const filtersShape = {
     'Exact source status; omission includes all statuses, including Deprecated.',
   ).optional(),
   viewId: text(
-    'CWE view ID or bare integer; matches its same-view weakness membership closure.',
+    'CWE view ID or bare integer from cwe_list_reference topic views; matches its same-view weakness membership closure.',
   ).optional(),
 };
 
@@ -93,9 +99,7 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
     shown: z.number().int().describe('Items shown on this page.').optional(),
     cap: z.number().int().describe('Effective page limit.').optional(),
   },
-  enrichmentTrailer: {
-    appliedFilters: { render: (filters) => formatCatalog({ appliedFilters: filters })[0].text },
-  },
+  enrichmentTrailer: catalogEnrichmentTrailer,
   errors: [
     {
       reason: 'unknown_filter',
@@ -135,17 +139,7 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
       throw serviceUnavailable('The loaded CWE catalog contains no weaknesses.', {
         retryable: false,
       });
-    const page = pageItems(
-      matches,
-      input,
-      ['cwe_search_weaknesses', filters, Math.min(input.limit, 100)],
-      snapshot.provenance,
-    );
-    ctx.enrich.total(matches.length);
-    ctx.enrich({ appliedFilters: { ...filters, limit: Math.min(input.limit, 100) } });
-    if (page.pagination.hasMore)
-      ctx.enrich.truncated({ shown: page.items.length, cap: Math.min(input.limit, 100) });
-    const notices = page.notice ? [page.notice] : [];
+    const notices: string[] = [];
     if (!matches.length)
       notices.push(
         filters.viewId
@@ -158,25 +152,40 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
                 )}). Call cwe_list_reference for supported vocabulary, or repeat cwe_search_weaknesses with fewer filters.`
             : 'No weakness matched every text token. Repeat cwe_search_weaknesses with fewer terms.',
       );
-    if (notices.length) ctx.enrich.notice(notices.join(' '));
-    return {
-      results: page.items.map((entry) => ({
-        id: entry.id,
-        name: entry.name,
-        status: entry.status,
-        sourceUrl: entry.sourceUrl,
-        descriptionPreview:
-          [
-            ...new Intl.Segmenter('en', { granularity: 'sentence' }).segment(entry.description),
-          ][0]?.segment.trim() ?? entry.description,
-        ...(entry.abstraction !== undefined ? { abstraction: entry.abstraction } : {}),
-        ...(entry.likelihoodOfExploit !== undefined
-          ? { likelihoodOfExploit: entry.likelihoodOfExploit }
-          : {}),
-      })),
+    const previews = matches.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      status: entry.status,
+      sourceUrl: entry.sourceUrl,
+      descriptionPreview:
+        sentenceSegmenter.segment(entry.description).containing(0)?.segment.trim() ??
+        entry.description,
+      ...(entry.abstraction !== undefined ? { abstraction: entry.abstraction } : {}),
+      ...(entry.likelihoodOfExploit !== undefined
+        ? { likelihoodOfExploit: entry.likelihoodOfExploit }
+        : {}),
+    }));
+    const output = (page: CatalogPage<(typeof previews)[number]>) => ({
+      results: page.items,
       pagination: page.pagination,
       provenance: snapshot.provenance,
-    };
+    });
+    const enrichment = (page: CatalogPage<(typeof previews)[number]>) =>
+      pageEnrichment(
+        page,
+        input.limit,
+        { ...filters, limit: Math.min(input.limit, 100) },
+        notices.join(' '),
+      );
+    const page = pageItems(
+      previews,
+      input,
+      ['cwe_search_weaknesses', filters, Math.min(input.limit, 100)],
+      snapshot.provenance,
+      (candidate) => deliveredSize(output(candidate), enrichment(candidate)),
+    );
+    ctx.enrich(enrichment(page));
+    return output(page);
   },
   format: formatCatalog,
 });

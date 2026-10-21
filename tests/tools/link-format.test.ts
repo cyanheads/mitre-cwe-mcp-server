@@ -34,3 +34,41 @@ describe('entity-looking URL data', () => {
     expect(formatCatalog({ references })[0].text).toContain(`[${label}](<${markdownUrl}>)`);
   });
 });
+
+describe('inert XML anchor destinations', () => {
+  it.each(['javascript:alert(1)', 'data:text/html;base64,PHNjcmlwdD4='])(
+    'keeps unsupported destination %s visible without making it a link',
+    (href) => {
+      const xml = cweXml.replace(
+        '<Description>Sparse description.</Description>',
+        `<Description>Before <xhtml:a href="${href}">source label</xhtml:a> after.</Description>`,
+      );
+      const description = parseCweCatalog(xml).weaknesses.get('CWE-20')?.description;
+      expect(description).toContain('Before');
+      expect(description).toContain('source label');
+      expect(description).toContain(href);
+      expect(description).toContain('after.');
+      expect(description).not.toContain('](<');
+      const rendered = formatCatalog({ description })[0].text;
+      expect(rendered).toContain(href);
+      expect(rendered).toContain('source label');
+      expect(rendered).not.toContain('](<');
+    },
+  );
+
+  it.each(['https', 'http'])(
+    'keeps %s destination delimiters and backslashes inside one safe source link',
+    (scheme) => {
+      const href = `${scheme}://example.test/a\\>)[injected](https://evil.test)![image](https://evil.test/i)<tail`;
+      const encoded = href.replaceAll('\\', '%5C').replaceAll('>', '%3E').replaceAll('<', '%3C');
+      const xmlHref = href.replaceAll('>', '&gt;').replaceAll('<', '&lt;');
+      const xml = cweXml.replace(
+        '<Description>Sparse description.</Description>',
+        `<Description><xhtml:a href="${xmlHref}">source label</xhtml:a></Description>`,
+      );
+      const description = parseCweCatalog(xml).weaknesses.get('CWE-20')?.description;
+      expect(description).toBe(`[source label](<${encoded}>)`);
+      expect(formatCatalog({ description })[0].text).toContain(`> [source label](<${encoded}>)`);
+    },
+  );
+});

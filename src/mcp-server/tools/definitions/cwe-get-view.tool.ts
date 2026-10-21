@@ -6,9 +6,13 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCatalogService } from '@/services/index.js';
 import {
+  type CatalogPage,
+  catalogEnrichmentTrailer,
+  deliveredSize,
   formatCatalog,
   list,
   normalizeId,
+  pageEnrichment,
   pageItems,
   paginationSchema,
   pagingShape,
@@ -81,9 +85,7 @@ export const cweGetView = tool('cwe_get_view', {
     shown: z.number().int().describe('Page item count.').optional(),
     cap: z.number().int().describe('Effective page limit.').optional(),
   },
-  enrichmentTrailer: {
-    appliedFilters: { render: (filters) => formatCatalog({ appliedFilters: filters })[0].text },
-  },
+  enrichmentTrailer: catalogEnrichmentTrailer,
   errors: [
     {
       reason: 'invalid_cursor',
@@ -97,44 +99,49 @@ export const cweGetView = tool('cwe_get_view', {
     const snapshot = getCatalogService().snapshot();
     const id = normalizeId(input.id, 'CWE');
     const view = snapshot.cwe.views.get(id);
+    const members = view?.members ?? [];
+    const output = (page: CatalogPage<(typeof members)[number]>) => {
+      const common = {
+        id,
+        members: page.items.map((member) => ({ ...member })),
+        pagination: page.pagination,
+        provenance: snapshot.provenance,
+      };
+      if (!view)
+        return {
+          ...common,
+          found: false,
+          reason: snapshot.cwe.weaknesses.has(id)
+            ? ('wrong_type' as const)
+            : ('not_found' as const),
+          guidance:
+            'Call cwe_list_reference with topic views to find a view ID, then repeat cwe_get_view.',
+        };
+      const { members: _members, audience, ...metadata } = view;
+      return {
+        ...metadata,
+        ...common,
+        found: true,
+        ...(audience !== undefined ? { audience: audience.map((item) => ({ ...item })) } : {}),
+        ...(view.members.length === 0
+          ? {
+              guidance:
+                'This view has no recorded direct members; this does not establish that no weaknesses belong to it. Review filterDefinition when present, or use cwe_get_hierarchy for navigation.',
+            }
+          : {}),
+      };
+    };
+    const enrichment = (page: CatalogPage<(typeof members)[number]>) =>
+      pageEnrichment(page, input.limit, { id, limit: Math.min(input.limit, 100) });
     const page = pageItems(
-      view?.members ?? [],
+      members,
       input,
       ['cwe_get_view', id, Math.min(input.limit, 100)],
       snapshot.provenance,
+      (candidate) => deliveredSize(output(candidate), enrichment(candidate)),
     );
-    ctx.enrich.total(page.pagination.total);
-    ctx.enrich({ appliedFilters: { id, limit: Math.min(input.limit, 100) } });
-    if (page.pagination.hasMore)
-      ctx.enrich.truncated({ shown: page.items.length, cap: Math.min(input.limit, 100) });
-    if (page.notice) ctx.enrich.notice(page.notice);
-    const common = {
-      id,
-      members: page.items.map((member) => ({ ...member })),
-      pagination: page.pagination,
-      provenance: snapshot.provenance,
-    };
-    if (!view)
-      return {
-        ...common,
-        found: false,
-        reason: snapshot.cwe.weaknesses.has(id) ? ('wrong_type' as const) : ('not_found' as const),
-        guidance:
-          'Call cwe_list_reference with topic views to find a view ID, then repeat cwe_get_view.',
-      };
-    const { members: _members, audience, ...metadata } = view;
-    return {
-      ...metadata,
-      ...common,
-      found: true,
-      ...(audience !== undefined ? { audience: audience.map((item) => ({ ...item })) } : {}),
-      ...(view.members.length === 0
-        ? {
-            guidance:
-              'This view has no recorded direct members; this does not establish that no weaknesses belong to it. Review filterDefinition when present, or use cwe_get_hierarchy for navigation.',
-          }
-        : {}),
-    };
+    ctx.enrich(enrichment(page));
+    return output(page);
   },
   format: formatCatalog,
 });

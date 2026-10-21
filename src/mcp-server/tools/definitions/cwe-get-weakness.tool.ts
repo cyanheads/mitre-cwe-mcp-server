@@ -6,13 +6,20 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCatalogService } from '@/services/index.js';
 import { batchOutput, weaknessEntrySchema } from '../catalog-schemas.js';
-import { getWeaknessDetails, weaknessSections } from '../detail-projection.js';
-import { formatCatalog, idsSchema, inputEnum, list, text } from '../shared.js';
+import { detailEnrichment, getWeaknessDetails, weaknessSections } from '../detail-projection.js';
+import {
+  detailEnrichmentTrailer,
+  formatCatalog,
+  idsSchema,
+  inputEnum,
+  list,
+  text,
+} from '../shared.js';
 /** Retrieve CWE weaknesses and categories; resolver misses do not fail the batch. */
 export const cweGetWeakness = tool('cwe_get_weakness', {
   title: 'Retrieve CWE weaknesses',
   description:
-    'Retrieve CWE weaknesses or categories by CWE-N or bare numeric IDs. Processes the first 20 distinct IDs and discloses deferred IDs. Defaults to summary, consequences, mitigations, and relations; explicit sections return complete selected content, while an empty sections array requests an outline. Select examples and use exampleOffset/exampleLimit for complete source-ordered example pages. Categories are organizational entries, not vulnerability root causes.',
+    'Retrieve CWE weaknesses or categories by CWE-N or bare numeric IDs. Processes up to 20 distinct IDs within a 24,000-byte response budget and discloses deferred IDs. Defaults to summary, consequences, mitigations, and relations; oversized defaults become outlines. Explicit sections remain complete, including one oversized record with disclosure; an empty sections array requests an outline. Select examples and use exampleOffset/exampleLimit for complete source-ordered example pages. Categories are organizational entries, not vulnerability root causes.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     ids: idsSchema,
@@ -39,10 +46,15 @@ export const cweGetWeakness = tool('cwe_get_weakness', {
   output: batchOutput(weaknessEntrySchema),
   enrichment: {
     totalCount: z.number().int().describe('Distinct submitted identifiers before the batch cap.'),
-    truncated: z.boolean().describe('Whether the batch cap deferred identifiers.').optional(),
+    truncated: z
+      .boolean()
+      .describe('Whether the count or response budget deferred identifiers.')
+      .optional(),
     shown: z.number().int().describe('Identifiers processed.').optional(),
     cap: z.number().int().describe('Maximum identifiers processed per call.').optional(),
+    notice: text('Whole-identifier continuation and budget disclosure.').optional(),
   },
+  enrichmentTrailer: detailEnrichmentTrailer,
   errors: [
     {
       reason: 'unknown_filter',
@@ -55,8 +67,7 @@ export const cweGetWeakness = tool('cwe_get_weakness', {
   ],
   handler(input, ctx) {
     const result = getWeaknessDetails(getCatalogService().snapshot(), input);
-    ctx.enrich.total(result.entries.length + result.notFound.length + result.deferredIds.length);
-    if (result.deferredIds.length) ctx.enrich.truncated({ shown: 20, cap: 20 });
+    ctx.enrich(detailEnrichment(result));
     return result;
   },
   format: formatCatalog,

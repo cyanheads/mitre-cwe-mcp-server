@@ -281,21 +281,15 @@ describe('complete detail contracts', () => {
     expect(JSON.stringify(invalid.content)).toContain('cwe_list_reference');
   });
 
-  it('switches defaults at exactly 24,000 UTF-8 bytes but never truncates explicit selections', async () => {
-    const base = await weakness({ ids: ['20'] });
-    const { notice: _notice, ...fullBeforeNotice } = base.entries[0]!;
-    const size = Buffer.byteLength(JSON.stringify(fullBeforeNotice));
+  it('outlines oversized delivered defaults but preserves explicit selections', async () => {
     const description = 'Sparse description.';
-    const at = description + 'x'.repeat(24000 - size);
+    const at = description + 'x'.repeat(24000);
     await disposeCatalogService();
     await load(cwe.replace(description, at));
-    expect((await weakness({ ids: ['20'] })).entries[0]?.kind).toBe('full');
-    await disposeCatalogService();
-    await load(cwe.replace(description, `${at}x`));
     expect((await weakness({ ids: ['20'] })).entries[0]?.kind).toBe('outline');
     const explicit = await weakness({ ids: ['20'], sections: ['summary'] });
-    expect(explicit.entries[0]).toMatchObject({ kind: 'full', description: `${at}x` });
-    expect(JSON.stringify(cweGetWeakness.format!(explicit))).toContain(`${at}x`);
+    expect(explicit.entries[0]).toMatchObject({ kind: 'full', description: at });
+    expect(JSON.stringify(cweGetWeakness.format!(explicit))).toContain(at);
   });
 
   it('outlines oversized CAPEC defaults and honors explicit complete and empty sections', async () => {
@@ -432,18 +426,41 @@ describe('reference and shared contracts', () => {
         `<View ID="${2000 + index}" Name="View ${index}" Type="Graph" Status="Stable"><Objective>Browse.</Objective></View>`,
     ).join('');
     await load(cwe.replace('</Views>', `${views}</Views>`));
-    const result = await runToolContract(cweListReference, { topic: 'views', limit: 101 });
+    let result = await runToolContract(cweListReference, { topic: 'views', limit: 101 });
     expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toMatchObject({
       items: expect.any(Array),
-      pagination: { total: 103, shown: 100, hasMore: true },
+      pagination: { total: 103, hasMore: true },
       totalCount: 103,
       truncated: true,
-      shown: 100,
       cap: 100,
     });
     expect(JSON.stringify(result.content)).toContain('capped at 100');
     expect(JSON.stringify(result.structuredContent)).toContain('capped at 100');
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = result.structuredContent as {
+        items: { id: string }[];
+        pagination: { shown: number; total: number; nextCursor?: string };
+        shown?: number;
+      };
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
+      expect(page.items.length).toBeGreaterThan(0);
+      expect(page.items.length).toBeLessThanOrEqual(100);
+      expect(page.pagination.shown).toBe(page.items.length);
+      expect(page.pagination.total).toBe(103);
+      seen.push(...page.items.map((item) => item.id));
+      cursor = page.pagination.nextCursor;
+      expect(seen.length).toBeLessThanOrEqual(103);
+      if (cursor)
+        result = await runToolContract(cweListReference, { topic: 'views', limit: 101, cursor });
+    } while (cursor);
+    expect(seen).toEqual([
+      'CWE-1000',
+      'CWE-1001',
+      ...Array.from({ length: 101 }, (_, i) => `CWE-${2000 + i}`),
+    ]);
   });
 
   it('renders code fences safely and preserves prose line breaks and links', () => {

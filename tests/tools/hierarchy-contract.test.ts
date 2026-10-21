@@ -101,34 +101,42 @@ describe('cwe_get_hierarchy public contracts', () => {
     expect(urls).toEqual(['https://cwe-api.mitre.org/api/v1/cwe/1/children?view=1000']);
   });
 
-  it('pages edges at 100 with explicit cap disclosure and keeps every page endpoint', async () => {
+  it('pages edges within byte and count caps and keeps every page endpoint', async () => {
     const first = await call({ limit: 1000 });
     expect(first.isError).not.toBe(true);
     expect(first.structuredContent).toMatchObject({
-      pagination: { total: 105, shown: 100, hasMore: true },
+      pagination: { total: 105, hasMore: true },
       truncated: true,
-      shown: 100,
       cap: 100,
       notice: expect.stringContaining('capped at 100'),
     });
     expect(JSON.stringify(first.content)).toContain('capped at 100');
-    const page = first.structuredContent as { pagination: { nextCursor: string } };
-    const second = await call({ limit: 1000, cursor: page.pagination.nextCursor });
-    expect(second.structuredContent).toMatchObject({
-      pagination: { total: 105, shown: 5, hasMore: false },
-    });
-    for (const wire of [first, second]) {
+    let wire = first;
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
       const data = wire.structuredContent as {
         nodes: { id: string; viewId: string }[];
         edges: { parentId: string; childId: string; viewId: string }[];
+        pagination: { total: number; shown: number; nextCursor?: string };
       };
+      expect(Buffer.byteLength(JSON.stringify(wire))).toBeLessThanOrEqual(24000);
+      expect(data.edges.length).toBeGreaterThan(0);
+      expect(data.edges.length).toBeLessThanOrEqual(100);
+      expect(data.pagination.total).toBe(105);
+      expect(data.pagination.shown).toBe(data.edges.length);
       const ids = new Set(data.nodes.map((node) => `${node.viewId}:${node.id}`));
       for (const edge of data.edges) {
         expect(ids.has(`${edge.viewId}:${edge.parentId}`)).toBe(true);
         expect(ids.has(`${edge.viewId}:${edge.childId}`)).toBe(true);
         expect(JSON.stringify(wire.content).replace(/\\/g, '')).toContain(edge.childId);
+        seen.push(edge.childId);
       }
-    }
+      cursor = data.pagination.nextCursor;
+      expect(seen.length).toBeLessThanOrEqual(105);
+      if (cursor) wire = await call({ limit: 1000, cursor });
+    } while (cursor);
+    expect(seen).toEqual(Array.from({ length: 105 }, (_, i) => `CWE-${i + 2}`));
     for (const limit of [0, 1001, 1.5])
       expect((await call({ limit })).structuredContent).toMatchObject({
         error: { code: JsonRpcErrorCode.InvalidParams },
@@ -267,7 +275,7 @@ describe('cwe_get_hierarchy public contracts', () => {
       },
     });
     for (const surface of [overflow.content, overflow.structuredContent])
-      expect(JSON.stringify(surface)).toContain('cwe_get_weakness');
+      expect(JSON.stringify(surface)).toContain('after the active requests finish');
     await disposeHierarchyService();
     for (const result of await Promise.all(pending))
       expect(result.structuredContent).toMatchObject({
