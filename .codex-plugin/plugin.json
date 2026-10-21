@@ -1,0 +1,25 @@
+{
+  "name": "mitre-cwe-mcp-server",
+  "version": "0.1.0",
+  "description": "Explore MITRE CWE weaknesses and CAPEC attack patterns, mitigations, code examples, and mappings via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/mitre-cwe-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/mitre-cwe-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "cyanheads", "mitre", "cwe", "capec", "application-security", "weaknesses", "attack-patterns"],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "mitre-cwe-mcp-server",
+    "shortDescription": "Explore MITRE CWE weaknesses and CAPEC attack patterns, mitigations, code examples, and mappings via MCP. STDIO or Streamable HTTP.",
+    "longDescription": "Look up software and hardware weaknesses in MITRE CWE, inspect mitigations and demonstrative code examples, and navigate weakness hierarchies and curated views. Search CAPEC attack patterns to connect weaknesses with attack mechanics and recorded MITRE ATT&CK mappings. Both catalogs are available without API keys.",
+    "developerName": "cyanheads",
+    "category": "security",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/cyanheads/mitre-cwe-mcp-server",
+    "defaultPrompt": []
+  }
+}

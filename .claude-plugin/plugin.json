@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "mitre-cwe-mcp-server",
+  "version": "0.1.0",
+  "description": "Explore MITRE CWE weaknesses and CAPEC attack patterns, mitigations, code examples, and mappings via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/mitre-cwe-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/mitre-cwe-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "cyanheads", "mitre", "cwe", "capec", "application-security", "weaknesses", "attack-patterns"],
+  "mcpServers": {
+    "mitre-cwe-mcp-server": {
+      "command": "npx",
+      "args": ["-y", "@cyanheads/mitre-cwe-mcp-server"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio"
+      }
+    }
+  }
+}

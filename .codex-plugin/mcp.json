@@ -1,0 +1,9 @@
+{
+  "mitre-cwe-mcp-server": {
+    "command": "npx",
+    "args": ["-y", "@cyanheads/mitre-cwe-mcp-server"],
+    "env": {
+      "MCP_TRANSPORT_TYPE": "stdio"
+    }
+  }
+}
