@@ -1,6 +1,6 @@
 {
   "name": "mitre-cwe-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Explore MITRE CWE weaknesses and CAPEC attack patterns, mitigations, code examples, and mappings via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
