@@ -10,7 +10,7 @@
   "homepage": "https://github.com/cyanheads/mitre-cwe-mcp-server#readme",
   "repository": "https://github.com/cyanheads/mitre-cwe-mcp-server",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "cyanheads", "mitre", "cwe", "capec", "application-security", "weaknesses", "attack-patterns"],
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "ai-agents", "ai-tools", "typescript", "bun", "stdio", "streamable-http", "cyanheads", "mitre", "cwe", "capec", "application-security", "weaknesses", "attack-patterns"],
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "mitre-cwe-mcp-server",

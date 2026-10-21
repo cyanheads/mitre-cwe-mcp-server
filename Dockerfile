@@ -132,6 +132,7 @@ LABEL org.opencontainers.image.source="https://github.com/cyanheads/mitre-cwe-mc
 # The manifest comes from the build context: the deps stage's copy was rewritten
 # by the OTel install, and the runtime reads only its name, version, and type.
 COPY package.json ./
+COPY LICENSE THIRD_PARTY_NOTICES.md ./
 COPY --from=deps /usr/src/app/node_modules ./node_modules
 
 # Copy the compiled application code from the build stage
