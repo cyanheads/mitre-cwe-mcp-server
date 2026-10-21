@@ -1,0 +1,21 @@
+<Attack_Pattern_Catalog xmlns="http://capec.mitre.org/capec-3" xmlns:xhtml="http://www.w3.org/1999/xhtml" Version="3.test" Date="2023-01-24">
+  <Attack_Patterns>
+    <Attack_Pattern ID="001" Name="Synthetic attack" Status="Stable" Abstraction="Detailed">
+      <Description>Attack description.</Description>
+      <Prerequisites><Prerequisite>First prerequisite.</Prerequisite><Prerequisite>Second prerequisite.</Prerequisite></Prerequisites>
+      <Execution_Flow>
+        <Attack_Step><Step>1</Step><Phase>Explore</Phase><Description><xhtml:p>Find <xhtml:b>input</xhtml:b>.</xhtml:p><xhtml:ol><xhtml:li>inspect</xhtml:li><xhtml:li>trace</xhtml:li></xhtml:ol></Description><Technique>Probe one.</Technique><Technique>Probe two.</Technique><Indicator>Signal one.</Indicator><Indicator>Signal two.</Indicator></Attack_Step>
+        <Attack_Step><Step>2</Step><Phase>Exploit</Phase><Description>Use input.</Description></Attack_Step>
+      </Execution_Flow>
+      <Skills_Required><Skill Level="Low">Read source.</Skill><Skill>Write payload.</Skill></Skills_Required>
+      <Consequences><Consequence><Scope>Confidentiality</Scope><Scope>Integrity</Scope><Impact>Read Data</Impact><Impact>Modify Data</Impact><Note>Conditional.</Note></Consequence></Consequences>
+      <Mitigations><Mitigation>Validate.</Mitigation><Mitigation>Encode.</Mitigation></Mitigations>
+      <Related_Weaknesses><Related_Weakness CWE_ID="0079"/></Related_Weaknesses>
+      <Related_Attack_Patterns><Related_Attack_Pattern Nature="ChildOf" CAPEC_ID="2"/></Related_Attack_Patterns>
+      <Taxonomy_Mappings><Taxonomy_Mapping Taxonomy_Name="ATTACK"><Entry_ID>1059.001</Entry_ID><Entry_Name>PowerShell</Entry_Name></Taxonomy_Mapping><Taxonomy_Mapping Taxonomy_Name="ATTACK"><Entry_ID>T1059.001</Entry_ID></Taxonomy_Mapping><Taxonomy_Mapping Taxonomy_Name="Other"/></Taxonomy_Mappings>
+      <References><Reference External_Reference_ID="CAP-REF"/></References>
+    </Attack_Pattern>
+    <Attack_Pattern ID="2" Name="Sparse pattern" Status="Deprecated" Abstraction="Meta"><Description>Only identity and description.</Description></Attack_Pattern>
+  </Attack_Patterns>
+  <External_References><External_Reference Reference_ID="CAP-REF"><Title>Attack reference</Title></External_Reference></External_References>
+</Attack_Pattern_Catalog>

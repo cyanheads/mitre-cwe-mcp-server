@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Weakness_Catalog xmlns="http://cwe.mitre.org/cwe-7" xmlns:xhtml="http://www.w3.org/1999/xhtml" Version="4.test" Date="2026-04-30">
+  <Weaknesses>
+    <Weakness ID="0079" Name="Synthetic &amp; weakness" Status="Draft" Abstraction="Base">
+      <Description><xhtml:p>First &amp; &#65; &amp;lt; sentence.<xhtml:br/>Second <xhtml:b>bold</xhtml:b> and <xhtml:i>emphasis</xhtml:i>.</xhtml:p><xhtml:ul><xhtml:li>one</xhtml:li><xhtml:li>two</xhtml:li></xhtml:ul><xhtml:p>Read <xhtml:a href="https://example.test/?a=1&amp;b=2">source</xhtml:a>.</xhtml:p></Description>
+      <Related_Weaknesses><Related_Weakness Nature="ChildOf" CWE_ID="20" View_ID="1000" Ordinal="Primary"/></Related_Weaknesses>
+      <Related_Attack_Patterns><Related_Attack_Pattern CAPEC_ID="001"/></Related_Attack_Patterns>
+      <Demonstrative_Examples>
+        <Demonstrative_Example>
+          <Intro_Text>Before code.</Intro_Text>
+          <Example_Code Nature="Bad" Language="C"><xhtml:div>if (a &lt; b) {<xhtml:br/>  call(&quot;x&quot;);<xhtml:br/>}</xhtml:div><xhtml:div>next();</xhtml:div></Example_Code>
+          <Body_Text>Between code.</Body_Text>
+          <Example_Code><![CDATA[  literal <tag> &amp;
+    next();]]></Example_Code>
+          <Body_Text>After code.</Body_Text>
+        </Demonstrative_Example>
+        <Demonstrative_Example><Body_Text>Second example.</Body_Text></Demonstrative_Example>
+      </Demonstrative_Examples>
+      <Taxonomy_Mappings><Taxonomy_Mapping Taxonomy_Name="OWASP"><Entry_ID>A03</Entry_ID><Entry_Name>Injection</Entry_Name><Mapping_Fit>Exact</Mapping_Fit></Taxonomy_Mapping></Taxonomy_Mappings>
+      <References><Reference External_Reference_ID="REF-1" Section="2"/></References>
+    </Weakness>
+    <Weakness ID="20" Name="Sparse" Status="Incomplete"><Description>Sparse description.</Description></Weakness>
+  </Weaknesses>
+  <Categories><Category ID="900" Name="Category" Status="Stable"><Summary>Organizational summary.</Summary><Relationships><Has_Member CWE_ID="79" View_ID="1000"/><Has_Member CWE_ID="20" View_ID="1000"/></Relationships></Category></Categories>
+  <Views>
+    <View ID="1000" Name="Navigation" Type="Graph" Status="Stable"><Objective>Explore.</Objective><Audience><Stakeholder><Type>Developer</Type><Description>Build software.</Description></Stakeholder></Audience><Members><Has_Member CWE_ID="900" View_ID="1000"/><Has_Member CWE_ID="79" View_ID="1000"/></Members></View>
+    <View ID="1001" Name="Filtered" Type="Implicit" Status="Draft"><Members><Filter>status = 'Draft'</Filter></Members></View>
+  </Views>
+  <External_References><External_Reference Reference_ID="REF-1"><Author>Alice</Author><Author>Bob</Author><Title>Reference</Title><Publication_Year>2026</Publication_Year><URL>https://example.test/ref</URL></External_Reference></External_References>
+</Weakness_Catalog>
