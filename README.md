@@ -31,8 +31,8 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 |:---|:---|
 | `cwe_list_reference` | Discover views, filter vocabulary, workflow guidance, and catalog refresh health |
 | `cwe_get_weakness` | Retrieve CWE weaknesses or categories with selected sections and complete example pages |
-| `cwe_get_attack_pattern` | Retrieve CAPEC prerequisites, execution steps, mitigations, and recorded mappings |
-| `cwe_search_weaknesses` | Search weaknesses by text, platform, abstraction, consequences, status, or view |
+| `cwe_get_attack_pattern` | Retrieve CAPEC attack patterns, categories, and views: prerequisites, execution steps, mitigations, members, and recorded mappings |
+| `cwe_search_weaknesses` | Search weaknesses by text, platform, abstraction, consequences, status, mapping usage, or view |
 | `cwe_search_attack_patterns` | Search CAPEC by text, CWE or ATT&CK mapping, abstraction, severity, or likelihood |
 | `cwe_get_view` | Read a CWE view's metadata and direct members in published order |
 | `cwe_get_hierarchy` | Traverse live CWE parents, children, ancestors, or descendants within a view |
@@ -41,52 +41,63 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 
 ### `cwe_list_reference` <sub>tool</sub>
 
-- `topic`: `views`, `abstraction_levels`, `mitigation_phases`, `platforms`, `relationship_natures`, `filter_values`, `workflow`, or `versions`; optional all-token label `filter`
-- Lists use `limit` (default 20, capped at 100) and `cursor`; `pagination.nextCursor` continues them. `versions` also returns `catalogs` with loaded versions, dates, counts, and refresh errors
+- `topic`: `views`, `abstraction_levels`, `mitigation_phases`, `platforms`, `relationship_natures`, `filter_values`, `workflow`, or `versions`; optional all-token `filter` on labels
+- `views` lists every CWE view with its direct member count, and a filter-defined view's `filterDefinition`
+- `filter_values` lists CWE statuses and mapping usage, consequence impacts, and CAPEC statuses, severity, and likelihood
+- Lists page with `limit` (default 20, max 100) and `pagination.nextCursor`; `versions` adds each loaded catalog's version, date, counts, and refresh errors
 
 ---
 
 ### `cwe_get_weakness` <sub>tool</sub>
 
-- Submit 1–200 CWE IDs or bare numbers; up to 20 distinct IDs are processed. `sections` supports `summary`, `consequences`, `mitigations`, `relations`, `examples`, `detection`, `observed`, `platforms`, and `mappings`; defaults to the first four, while `[]` requests an outline
-- `entries[].kind` is `full` or `outline`; `notFound[].reason` is `not_found` or `wrong_type`, and `deferredIds` carries whole IDs for another call. Categories are retrievable organizational records; views belong in `cwe_get_view`
-- Select `examples` with optional `exampleLanguage`; `exampleOffset` defaults to 0 and `exampleLimit` to 3 (no fixed upper cap). Complete examples retain ordered prose and code; continue with `examplePage.nextOffset`
+- 1–200 CWE IDs (`CWE-79`, `CWE79`, `cwe 079`, `CWE_79`, or `79`); up to 20 distinct items are processed per call and the rest return in `deferredIds`. A malformed item comes back in `notFound` without failing the batch; only an item holding a control character other than whitespace, or a non-ID item over 150 characters, rejects the call
+- `sections`: `summary`, `consequences`, `mitigations`, `relations`, `examples`, `detection`, `observed`, `platforms`, `mappings`, `notes` (default: the first four); `[]` returns an outline
+- `summary` includes recorded alternate terms (`XSS`), ordinalities (Primary, Resultant, Indirect), and background details, `platforms` adds functional areas and affected resources, and `relations` names each related weakness. `notes` returns every note MITRE records for weaknesses and categories, such as Relationship, Maintenance, Terminology, and Research Gap notes
+- `entries[].kind` is `full`, `partial` (default sections that did not fit the response budget are listed in `outline` with their sizes, and `notice` gives the re-call), or `outline`; `notFound[].reason` is `not_found`, `wrong_type` (a view, which belongs to `cwe_get_view`, or a prefixed ID of the other catalog), or `invalid_id` (an item that is no ID, echoed trimmed; `NVD-CWE-noinfo` and `NVD-CWE-Other` get their own guidance). Categories resolve here
+- Examples filter by `exampleLanguage` and page with `exampleOffset` (default 0), `exampleLimit` (default 3, no fixed cap), and `examplePage.nextOffset`; each example keeps its ordered prose and code
 
 ---
 
 ### `cwe_get_attack_pattern` <sub>tool</sub>
 
-- Submit 1–200 CAPEC IDs or bare numbers; up to 20 distinct IDs are processed, including Deprecated and Obsolete records. `sections`: `summary`, `prerequisites`, `execution`, `skills`, `consequences`, `mitigations`, `examples`, `relations`, or `mappings`; defaults to summary, prerequisites, execution, mitigations, and mappings
-- `sections: []` requests an outline. `entries[].kind`, per-ID `notFound`, and `deferredIds` distinguish complete selections, outlines, misses, and continuation; mappings preserve recorded CWE and ATT&CK IDs
+- 1–200 CAPEC IDs (`CAPEC-66`, `CAPEC66`, `capec_066`, or `66`), Deprecated and Obsolete included; up to 20 distinct items per call, the rest in `deferredIds`
+- `sections`: `summary`, `prerequisites`, `execution`, `skills`, `consequences`, `mitigations`, `examples`, `relations`, `mappings`, `notes` (default: summary, prerequisites, execution, mitigations, and mappings for patterns; summary and relations for categories and views); `[]` returns an outline
+- `entries[].type` is `attack_pattern`, `category`, or `view`, and only patterns carry `abstraction`. A category or view's `relations` list its direct `members` in source order, or for a filter-defined view its source XPath as `filterDefinition`; its `mappings` and `notes` carry the recorded taxonomy mappings, references, and MITRE notes
+- Start at view `CAPEC-1000` (Mechanisms of Attack) or `CAPEC-3000` (Domains of Attack) to browse patterns by category
+- Same `entries[].kind` and `notFound` contract as `cwe_get_weakness`; CAPEC patterns, categories, and views all resolve here, so `wrong_type` marks only a prefixed CWE ID. Mappings keep the recorded CWE and ATT&CK IDs
 
 ---
 
 ### `cwe_search_weaknesses` <sub>tool</sub>
 
-- Optional all-token `filter`, exact `language`, `technology`, `abstraction`, `consequenceImpact`, `status`, and `viewId`; omit filters to browse. View filtering includes same-view weakness membership closure; categories are excluded
-- All statuses are included by default. Results order by name matches, description matches, extended-description matches, then numeric ID; previews contain the first sentence. `limit` defaults to 20, caps at 100; continue with `pagination.nextCursor`
+- Optional all-token `filter` over the name, MITRE's recorded alternate terms (`XSS`, `ReDoS`, `UAF`), the description, and the extended description, plus exact `language`, `technology`, `abstraction`, `consequenceImpact`, `status`, `mappingUsage`, and `viewId`; no filters browses the catalog
+- Each result carries MITRE's `mappingUsage`, such as `Allowed`, `Allowed-with-Review`, or `Prohibited`, which says whether the entry may be used to map a vulnerability
+- `viewId` includes same-view membership closure, or for a filter-defined view the weaknesses its source XPath filter selects (CWE-658 C, CWE-702 Implementation, …). Categories are excluded; every status is included by default
+- Ranked by all tokens in the name or in one alternate term, then in the description, then any other match, then numeric ID; previews hold the first sentence, and `cwe_get_weakness` returns the terms in `summary`. `limit` default 20, max 100; continue with `pagination.nextCursor`
 
 ---
 
 ### `cwe_search_attack_patterns` <sub>tool</sub>
 
-- Optional all-token `filter`, `cweId`, `attackTechniqueId`, `abstraction`, `severity`, and `likelihood`; CWE mappings are exact, while a parent ATT&CK technique includes recorded subtechniques
-- `includeInactive` defaults to `false`, excluding Deprecated and Obsolete patterns. Results order by name matches, description matches, then numeric ID; `limit` defaults to 20, caps at 100; continue with `pagination.nextCursor`
+- Optional all-token `filter` over the name, recorded alternate terms (`MITM`), and the description, plus `cweId`, `attackTechniqueId`, `abstraction`, `severity`, and `likelihood`; CWE mappings match exactly, and a parent ATT&CK technique includes its recorded subtechniques
+- `includeInactive` (default `false`) adds Deprecated and Obsolete patterns. Ranked by all tokens in the name or in one alternate term, then in the description, then any other match, then numeric ID; `cwe_get_attack_pattern` returns the terms in `summary`. `limit` default 20, max 100; continue with `pagination.nextCursor`
 
 ---
 
 ### `cwe_get_view` <sub>tool</sub>
 
-- One CWE view `id`, with `limit` (default 20, capped at 100) and `cursor`; discover IDs through `cwe_list_reference` topic `views`
-- Returns objective, audience, source filter, and direct `members` in source order, continued by `pagination.nextCursor`. `found: false` carries `not_found` or `wrong_type`; navigation views list top-level members, with descendants accessible through hierarchy traversal
+- One view `id` (from `cwe_list_reference` topic `views`); `limit` default 20, max 100, continued by `pagination.nextCursor`
+- Objective, audience, status, filter definition, recorded notes, and direct `members` in published order. Navigation views list only top-level members; `cwe_get_hierarchy` reaches descendants
+- A filter-defined view lists no members: `filterDefinition` is its source XPath, and `cwe_search_weaknesses` with its `viewId` returns the weaknesses that filter selects. A filter with a part the server does not evaluate is named as such in `guidance`, and that search returns none with a notice
+- `found: false` carries `not_found` or `wrong_type`
 
 ---
 
 ### `cwe_get_hierarchy` <sub>tool</sub>
 
-- One CWE `id` and `direction`: `parents`, `children`, `ancestors`, or `descendants`; `viewId` defaults to `1000`, with `all` available explicitly. `primaryOnly` is valid only for ancestors
-- Returns view-scoped `nodes` and parent-to-child `edges`, `found`, `retrievedAt`, and `hierarchyFingerprint`; empty relations succeed, while upstream failures remain errors. Node names come from the loaded catalog and can lag live IDs
-- `limit` defaults to 20, caps at 100 edges. Follow `pagination.nextCursor`; continuations re-fetch the traversal, and `invalid_cursor` requires restarting without a cursor when topology or the catalog changes
+- One CWE `id` and a `direction`: `parents`, `children`, `ancestors`, or `descendants`; `viewId` defaults to `1000`, or `all` for every view. `primaryOnly` applies to ancestors only. Parents and children include category and view relations and match the first level of the same view's tree
+- View-scoped `nodes`, parent-to-child `edges`, `found`, `retrievedAt`, and `hierarchyFingerprint`. Empty relations succeed; upstream failures are errors, and a temporary MITRE refusal (HTTP 403) is retryable after a few minutes. Node names come from the loaded catalog and can lag the live API
+- `limit` default 20, max 100 edges; each page lists only the nodes its edges reference, plus any root without edges on the first page. Each `pagination.nextCursor` call re-fetches the traversal; `invalid_cursor` means the topology or catalog changed, so restart without a cursor
 
 ## Features
 
@@ -94,17 +105,19 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 MITRE-specific:
 
-- No API key or signup. Both XML catalogs load into memory before the server accepts requests; startup and every restart require access to MITRE's CWE and CAPEC download sources. Catalogs have no persistent disk cache or bundled copy
-- CWE version checks run every 24 hours; CAPEC conditional refreshes run every seven days. Failed refreshes retain the loaded data and appear in `cwe_list_reference` topic `versions`
-- Live CWE REST hierarchy traversal preserves multiple parents and view identity; catalog XML supplies local search and detail records
-- MITRE source statuses and absent sections remain explicit. Categories and views organize weaknesses; CAPEC mappings and execution flows are incomplete, and missing mappings cannot establish absence of a relationship or current ATT&CK validity
+- No API key. Both XML catalogs load into memory before the server accepts requests, so every start needs MITRE's CWE and CAPEC download sources; there is no disk cache or bundled copy
+- CWE checks for a new version every 24 hours and CAPEC refreshes weekly; a failed refresh keeps the loaded data and shows in `cwe_list_reference` topic `versions`
+- MITRE can refuse a burst of requests from one address with HTTP 403 for a few minutes. Catalog downloads, version checks, and hierarchy calls report it as a temporary, retryable failure and do not retry it immediately
+- Hierarchy calls go to the live CWE REST API and keep multiple parents and view identity; search and detail run against the local catalogs
+- MITRE statuses and absent sections stay explicit. CAPEC mappings and execution flows are incomplete: a missing mapping does not establish that no relationship exists, or that an ATT&CK ID is current
 
 Agent-friendly output:
 
-- Provenance: catalog versions, dates, load time, source links, and attribution accompany results
-- Bounded responses: ordinary responses target 24,000 serialized bytes across both output surfaces, including enrichment. Whole IDs or page items are deferred; default detail selections can become outlines. Explicit detail selections remain complete, and a single complete record or page item can exceed the budget with disclosure to preserve progress
-- Continuation: use `deferredIds`, `pagination.nextCursor`, or `examplePage.nextOffset`; stale or incompatible cursors fail with `invalid_cursor`. Unsupported vocabulary fails with `unknown_filter` and discovery guidance
-- Content parity: rendered `content[]` and `structuredContent` preserve the same selected values, including ordered example code. Catalog prose and code are reference data, never instructions to execute
+- Provenance on every response: catalog versions and dates, load time, source links, and attribution
+- A 24,000-byte budget across both output surfaces, enrichment included. Whole IDs, items, or edges defer to the next call, and a default detail selection omits whole sections that do not fit, naming them for a re-call; explicit selections stay complete, and a single record or item over budget returns whole with a notice
+- Continuation through `deferredIds`, `pagination.nextCursor`, or `examplePage.nextOffset`; stale cursors fail with `invalid_cursor`, unknown vocabulary with `unknown_filter`, whose message names the field and value and lists the supported values or the `cwe_list_reference` topic that does
+- CWE and CAPEC ID inputs accept an optional prefix in any case, followed by `-`, `_`, a space, or nothing, and drop leading zeros. ATT&CK technique IDs take `Tdddd` or `Tdddd.ddd`, with or without the `T` in either case (`T1059`, `t1059.001`, `1059`). A malformed single ID is an invalid argument whose message names the accepted forms
+- `content[]` and `structuredContent` carry the same values, ordered example code included. Catalog prose and code are reference data, never instructions
 
 ## Getting started
 
@@ -207,7 +220,7 @@ No server-specific environment variables are required. Catalog sources, refresh 
 | `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1`. | `in-memory` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
 
-See [`.env.example`](./.env.example) for every server setting and the common framework overrides.
+See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ## Running the server
 
