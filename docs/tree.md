@@ -1,6 +1,6 @@
 # mitre-cwe-mcp-server - Directory Structure
 
-Generated on: 2026-10-21 04:04:24
+Generated on: 2026-10-21 09:55:06
 
 ```text
 mitre-cwe-mcp-server/
@@ -24,6 +24,7 @@ mitre-cwe-mcp-server/
 │   ├── extensions.json
 │   └── settings.json
 ├── changelog/
+│   ├── 0.1.x/
 │   └── template.md
 ├── docs/
 │   └── design.md
@@ -152,21 +153,38 @@ mitre-cwe-mcp-server/
 │   │   │   ├── catalog-index.ts
 │   │   │   ├── catalog-service.ts
 │   │   │   ├── hierarchy-service.ts
+│   │   │   ├── markdown-escape.ts
 │   │   │   ├── types.ts
+│   │   │   ├── view-filter.ts
 │   │   │   └── xml-normalization.ts
 │   │   └── index.ts
 │   └── index.ts
 ├── tests/
 │   ├── fixtures/
-│   │   └── catalog/
-│   │       ├── capec-normalization.xml
-│   │       └── cwe-normalization.xml
+│   │   ├── catalog/
+│   │   │   ├── capec-normalization.xml
+│   │   │   └── cwe-normalization.xml
+│   │   └── hierarchy/
+│   │       ├── cwe-1003-children-view-1003-viewid.json
+│   │       ├── cwe-1003-children-view-1003.json
+│   │       ├── cwe-1194-children-view-1194.json
+│   │       ├── cwe-20-ancestors-primary.json
+│   │       ├── cwe-20-descendants.json
+│   │       ├── cwe-2000-children-view-2000-excerpt.json
+│   │       ├── cwe-284-parents.json
+│   │       ├── cwe-79-ancestors-primary.json
+│   │       └── cwe-79-parents.json
+│   ├── helpers/
+│   │   ├── commonmark.ts
+│   │   └── cpu-timing.ts
 │   ├── services/
 │   │   └── catalog/
 │   │       ├── acquisition.test.ts
 │   │       ├── catalog-index.test.ts
 │   │       ├── catalog-service.test.ts
 │   │       ├── hierarchy-service.test.ts
+│   │       ├── markdown-escape.test.ts
+│   │       ├── view-filter.test.ts
 │   │       └── xml-normalization.test.ts
 │   └── tools/
 │       ├── detail-contract.test.ts
@@ -183,6 +201,7 @@ mitre-cwe-mcp-server/
 ├── biome.json
 ├── bun.lock
 ├── bunfig.toml
+├── CHANGELOG.md
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile

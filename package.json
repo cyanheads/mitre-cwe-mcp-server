@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/mitre-cwe-mcp-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "mcpName": "io.github.cyanheads/mitre-cwe-mcp-server",
   "description": "Explore MITRE CWE weaknesses and CAPEC attack patterns, mitigations, code examples, and mappings via MCP. STDIO or Streamable HTTP.",
   "author": "Casey Hand <casey@caseyjhand.com> (https://caseyjhand.com)",
