@@ -24,7 +24,7 @@
   <Categories><Category ID="900" Name="Category" Status="Stable"><Summary>Organizational summary.</Summary><Relationships><Has_Member CWE_ID="79" View_ID="1000"/><Has_Member CWE_ID="20" View_ID="1000"/></Relationships></Category></Categories>
   <Views>
     <View ID="1000" Name="Navigation" Type="Graph" Status="Stable"><Objective>Explore.</Objective><Audience><Stakeholder><Type>Developer</Type><Description>Build software.</Description></Stakeholder></Audience><Members><Has_Member CWE_ID="900" View_ID="1000"/><Has_Member CWE_ID="79" View_ID="1000"/></Members></View>
-    <View ID="1001" Name="Filtered" Type="Implicit" Status="Draft"><Members><Filter>status = 'Draft'</Filter></Members></View>
+    <View ID="1001" Name="Filtered" Type="Implicit" Status="Draft"><Filter>/Weakness_Catalog/*/*[@Status='Draft']</Filter></View>
   </Views>
   <External_References><External_Reference Reference_ID="REF-1"><Author>Alice</Author><Author>Bob</Author><Title>Reference</Title><Publication_Year>2026</Publication_Year><URL>https://example.test/ref</URL></External_Reference></External_References>
 </Weakness_Catalog>

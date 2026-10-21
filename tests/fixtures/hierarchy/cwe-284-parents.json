@@ -1,0 +1,15 @@
+[
+  { "Type": "view", "ID": "1000", "ViewID": "1000" },
+  { "Type": "category", "ID": "1011", "ViewID": "1008" },
+  { "Type": "category", "ID": "1031", "ViewID": "1026" },
+  { "Type": "view", "ID": "1340", "ViewID": "1340" },
+  { "Type": "category", "ID": "1345", "ViewID": "1344" },
+  { "Type": "category", "ID": "1369", "ViewID": "1358" },
+  { "Type": "category", "ID": "1372", "ViewID": "1358" },
+  { "Type": "category", "ID": "1396", "ViewID": "1400" },
+  { "Type": "view", "ID": "1435", "ViewID": "1435" },
+  { "Type": "category", "ID": "1436", "ViewID": "1450" },
+  { "Type": "category", "ID": "254", "ViewID": "700" },
+  { "Type": "category", "ID": "723", "ViewID": "711" },
+  { "Type": "category", "ID": "944", "ViewID": "888" }
+]

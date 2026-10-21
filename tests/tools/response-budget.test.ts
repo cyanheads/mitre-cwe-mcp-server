@@ -4,7 +4,7 @@
  */
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { strToU8, zipSync } from 'fflate';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cweGetAttackPattern } from '@/mcp-server/tools/definitions/cwe-get-attack-pattern.tool.js';
 import { cweGetHierarchy } from '@/mcp-server/tools/definitions/cwe-get-hierarchy.tool.js';
 import { cweGetView } from '@/mcp-server/tools/definitions/cwe-get-view.tool.js';
@@ -12,6 +12,7 @@ import { cweGetWeakness } from '@/mcp-server/tools/definitions/cwe-get-weakness.
 import { cweListReference } from '@/mcp-server/tools/definitions/cwe-list-reference.tool.js';
 import { cweSearchAttackPatterns } from '@/mcp-server/tools/definitions/cwe-search-attack-patterns.tool.js';
 import { cweSearchWeaknesses } from '@/mcp-server/tools/definitions/cwe-search-weaknesses.tool.js';
+import { RESPONSE_BUDGET, selectWithinBudget } from '@/mcp-server/tools/shared.js';
 import {
   disposeCatalogService,
   disposeHierarchyService,
@@ -20,7 +21,48 @@ import {
   SOURCE_URLS,
 } from '@/services/index.js';
 
+/** Batch builds of the detail tools, counted through the real fitting function they call. */
+const fitting = vi.hoisted(() => ({ builds: 0, maxima: [] as number[] }));
+vi.mock('@/mcp-server/tools/shared.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/mcp-server/tools/shared.js')>();
+  return {
+    ...actual,
+    selectWithinBudget: <T>(
+      maximum: number,
+      build: (count: number, oversized: boolean) => T,
+      measure: ((result: T) => number) | undefined,
+    ) => {
+      fitting.maxima.push(maximum);
+      return actual.selectWithinBudget(
+        maximum,
+        (count, oversized) => {
+          fitting.builds++;
+          return build(count, oversized);
+        },
+        measure,
+      );
+    },
+  };
+});
+beforeEach(() => {
+  fitting.builds = 0;
+  fitting.maxima.length = 0;
+});
+/** Each detail call fits its batch with at most `ceil(log2 n) + 2` builds, n its processed IDs. */
+function boundedBuilds() {
+  expect(fitting.maxima).toHaveLength(1);
+  const maximum = fitting.maxima[0] as number;
+  expect(fitting.builds, `${maximum} processed IDs`).toBeLessThanOrEqual(
+    Math.ceil(Math.log2(maximum)) + 2,
+  );
+  fitting.builds = 0;
+  fitting.maxima.length = 0;
+}
+
 const budget = 24_000;
+/** The oversize disclosure when the first result fits on its own and the deferred IDs do not. */
+const deferredOverflow =
+  'The identifiers echoed in deferredIds exceed the 24,000-byte response budget beside the first result, which fits on its own; all are returned so none is lost.';
 const clock = {
   now: () => Date.parse('2026-10-20T00:00:00Z'),
   schedule: () => ({ cancel() {} }),
@@ -37,6 +79,9 @@ type Batch = {
   deferredIds: string[];
 };
 const bytes = (wire: Wire) => Buffer.byteLength(JSON.stringify(wire), 'utf8');
+/** Every rendered `content[]` line, as a client that forwards the text sees it. */
+const lines = (wire: Wire) =>
+  wire.content.flatMap((block) => (block.type === 'text' ? block.text.split('\n') : []));
 function bounded(wire: Wire) {
   expect(wire.isError).not.toBe(true);
   expect(bytes(wire)).toBeLessThanOrEqual(budget);
@@ -50,6 +95,7 @@ async function load(
   count = 35,
   name = 'Known',
   withMembers = false,
+  firstViewNotes = '',
 ) {
   const members = withMembers
     ? Array.from(
@@ -65,13 +111,16 @@ async function load(
   const views = Array.from(
     { length: count },
     (_, i) =>
-      `<View ID="${1000 + i}" Name="View ${i}" Type="Graph" Status="Stable"><Objective>${description}</Objective><Members>${i === 0 ? members : ''}</Members></View>`,
+      `<View ID="${1000 + i}" Name="View ${i}" Type="Graph" Status="Stable"><Objective>${description}</Objective><Members>${i === 0 ? members : ''}</Members>${i === 0 ? firstViewNotes : ''}</View>`,
   ).join('');
   const patterns = Array.from(
     { length: count },
     (_, i) =>
       `<Attack_Pattern ID="${i + 1}" Name="Pattern ${i + 1}" Status="Stable" Abstraction="Standard"><Description>${description}</Description></Attack_Pattern>`,
   ).join('');
+  await serve(weaknesses, views, patterns);
+}
+async function serve(weaknesses: string, views: string, patterns: string) {
   const cwe = `<Weakness_Catalog xmlns="http://cwe.mitre.org/cwe-7" Version="4.budget" Date="2026-04-30"><Weaknesses>${weaknesses}</Weaknesses><Categories><Category ID="900" Name="Group" Status="Stable"><Summary>Group.</Summary></Category></Categories><Views>${views}</Views></Weakness_Catalog>`;
   const capec = `<Attack_Pattern_Catalog xmlns="http://capec.mitre.org/capec-3" Version="3.budget" Date="2023-01-24"><Attack_Patterns>${patterns}</Attack_Patterns></Attack_Pattern_Catalog>`;
   await initCatalogService({
@@ -83,6 +132,30 @@ async function load(
       throw new Error(`Unexpected catalog URL ${url}`);
     },
   });
+}
+/**
+ * Weaknesses whose default sections are a summary, one consequence, and one mitigation of the given
+ * character counts, and patterns whose summary, prerequisites, and mitigations follow the same counts.
+ */
+async function loadSections(
+  count: number,
+  sizes: { summary: number; consequence: number; mitigation: number },
+) {
+  const weaknesses = Array.from(
+    { length: count },
+    (_, i) =>
+      `<Weakness ID="${i + 1}" Name="Known ${i + 1}" Status="Stable" Abstraction="Base"><Description>${'d'.repeat(sizes.summary)}</Description><Common_Consequences><Consequence><Scope>Integrity</Scope><Impact>Modify Data</Impact><Note>${'c'.repeat(sizes.consequence)}</Note></Consequence></Common_Consequences><Potential_Mitigations><Mitigation><Phase>Implementation</Phase><Description>${'m'.repeat(sizes.mitigation)}</Description></Mitigation></Potential_Mitigations></Weakness>`,
+  ).join('');
+  const patterns = Array.from(
+    { length: count },
+    (_, i) =>
+      `<Attack_Pattern ID="${i + 1}" Name="Pattern ${i + 1}" Status="Stable" Abstraction="Standard"><Description>${'d'.repeat(sizes.summary)}</Description><Prerequisites><Prerequisite>${'c'.repeat(sizes.consequence)}</Prerequisite></Prerequisites><Mitigations><Mitigation>${'m'.repeat(sizes.mitigation)}</Mitigation></Mitigations></Attack_Pattern>`,
+  ).join('');
+  await serve(
+    weaknesses,
+    '<View ID="1000" Name="View" Type="Graph" Status="Stable"><Objective>View.</Objective><Members/></View>',
+    patterns,
+  );
 }
 afterEach(async () => {
   await disposeHierarchyService();
@@ -109,8 +182,7 @@ describe('complete delivered response budget', () => {
         expect(data.pagination.total).toBe(35);
         expect(data.pagination.shown).toBe(items.length);
         expect(items.length).toBeGreaterThan(0);
-        for (const item of items)
-          expect(JSON.stringify(wire.content).replace(/\\/g, '')).toContain(item.id);
+        for (const item of items) expect(lines(wire)).toContain(`> ${item.id}`);
         if (data.pagination.hasMore) disclosed(wire);
         seen.push(...items.map((item) => item.id ?? ('key' in item ? item.key : '')));
         cursor = data.pagination.nextCursor;
@@ -145,8 +217,8 @@ describe('complete delivered response budget', () => {
       expect(data.members.length).toBeGreaterThan(0);
       for (const member of data.members) {
         expect(member.name).toBe(`${name} ${member.id.slice(4)}`);
-        expect(JSON.stringify(wire.content)).toContain(member.name);
-        expect(JSON.stringify(wire.content).replace(/\\/g, '')).toContain(member.id);
+        expect(lines(wire)).toContain(`> ${member.name}`);
+        expect(lines(wire)).toContain(`> ${member.id}`);
         seen.push(member.id);
       }
       cursor = data.pagination.nextCursor;
@@ -154,6 +226,41 @@ describe('complete delivered response budget', () => {
       calls++;
     } while (cursor);
     expect(calls).toBeGreaterThan(1);
+    expect(seen).toEqual(Array.from({ length: 35 }, (_, i) => `CWE-${35 - i}`));
+  });
+
+  it('repeats complete view notes on every byte-bounded member page', async () => {
+    const note = '界'.repeat(2000);
+    const name = '界'.repeat(150);
+    await load(
+      'Small objective.',
+      35,
+      name,
+      true,
+      `<Notes><Note Type="Maintenance">${note}</Note></Notes>`,
+    );
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let calls = 0;
+    do {
+      const wire = await runToolContract(cweGetView, { id: '1000', limit: 1000, cursor });
+      bounded(wire);
+      const data = wire.structuredContent as {
+        notes: { type: string; text: string }[];
+        members: { id: string; name: string }[];
+        pagination: Page['pagination'];
+      };
+      expect(data.notes).toEqual([{ type: 'Maintenance', text: note }]);
+      expect(lines(wire)).toContain(`> ${note}`);
+      expect(data.members.length).toBeGreaterThan(0);
+      for (const member of data.members) expect(lines(wire)).toContain(`> ${member.name}`);
+      seen.push(...data.members.map((member) => member.id));
+      if (data.pagination.hasMore) disclosed(wire);
+      cursor = data.pagination.nextCursor;
+      expect(seen.length).toBeLessThanOrEqual(35);
+      calls++;
+    } while (cursor);
+    expect(calls).toBeGreaterThan(2);
     expect(seen).toEqual(Array.from({ length: 35 }, (_, i) => `CWE-${35 - i}`));
   });
 
@@ -166,6 +273,7 @@ describe('complete delivered response budget', () => {
           ? await runToolContract(cweGetWeakness, { ids: ['1'] })
           : await runToolContract(cweGetAttackPattern, { ids: ['1'] });
       bounded(wire);
+      boundedBuilds();
       expect((wire.structuredContent as Batch).entries[0]?.kind).toBe('outline');
       expect(JSON.stringify(wire.content)).toContain('outline');
     },
@@ -184,6 +292,7 @@ describe('complete delivered response budget', () => {
             ? await runToolContract(cweGetWeakness, { ids })
             : await runToolContract(cweGetAttackPattern, { ids });
         bounded(wire);
+        boundedBuilds();
         const data = wire.structuredContent as Batch;
         expect(
           data.entries.every(
@@ -269,8 +378,12 @@ describe('complete delivered response budget', () => {
     expect((alone.structuredContent as Batch).entries[0]?.kind).toBe('full');
     const remaining = Array.from({ length: 199 }, (_, i) => `CWE-${10000 + i}`);
     const ids = ['1', ...remaining];
+    fitting.builds = 0;
+    fitting.maxima.length = 0;
     const ordinary = await runToolContract(cweGetWeakness, { ids });
     bounded(ordinary);
+    // Its only section cannot fit beside the deferred IDs, so the oversized build outlines it.
+    boundedBuilds();
     expect((ordinary.structuredContent as Batch).entries).toEqual([
       expect.objectContaining({ id: 'CWE-1', kind: 'outline' }),
     ]);
@@ -289,6 +402,156 @@ describe('complete delivered response budget', () => {
     expect(JSON.stringify(explicit.content)).toContain(description);
     disclosed(explicit);
   });
+
+  it.each(['cwe', 'capec'] as const)(
+    'returns the longest prefix of partial %s defaults and defers the rest whole to the end',
+    async (kind) => {
+      await loadSections(6, { summary: 1500, consequence: 1500, mitigation: 9000 });
+      const prefix = kind === 'cwe' ? 'CWE' : 'CAPEC';
+      const omittedNotice = `Omitted to fit the 24,000-byte response budget: mitigations. Repeat ${kind === 'cwe' ? 'cwe_get_weakness' : 'cwe_get_attack_pattern'} with this ID and sections ["mitigations"].`;
+      let ids = ['1', '2', '3', '4', '5', '6'];
+      const processed: string[] = [];
+      const firstCall: string[] = [];
+      let calls = 0;
+      do {
+        const wire =
+          kind === 'cwe'
+            ? await runToolContract(cweGetWeakness, { ids })
+            : await runToolContract(cweGetAttackPattern, { ids });
+        bounded(wire);
+        boundedBuilds();
+        const data = wire.structuredContent as Batch;
+        expect(data.entries.length).toBeGreaterThan(0);
+        for (const entry of data.entries) {
+          expect(entry).toMatchObject({
+            kind: 'partial',
+            description: 'd'.repeat(1500),
+            notice: expect.stringContaining(omittedNotice),
+          });
+          expect(entry).not.toHaveProperty('mitigations');
+        }
+        // The summaries are identical, so content[] must render one per entry, not one in all.
+        expect(lines(wire).filter((line) => line === `> ${'d'.repeat(1500)}`)).toHaveLength(
+          data.entries.length,
+        );
+        if (data.deferredIds.length) disclosed(wire);
+        if (calls === 0) firstCall.push(...data.entries.map((entry) => entry.id));
+        processed.push(...data.entries.map((entry) => entry.id));
+        ids = data.deferredIds;
+        expect(++calls).toBeLessThan(7);
+      } while (ids.length);
+      // Two partial entries share a response, so the first call defers four whole IDs.
+      expect(firstCall).toEqual([`${prefix}-1`, `${prefix}-2`]);
+      expect(processed).toEqual([1, 2, 3, 4, 5, 6].map((id) => `${prefix}-${id}`));
+    },
+  );
+
+  it('refills the first default record against its deferred-ID metadata instead of outlining it', async () => {
+    await loadSections(1, { summary: 1500, consequence: 1500, mitigation: 7000 });
+    const alone = await runToolContract(cweGetWeakness, { ids: ['1'] });
+    bounded(alone);
+    expect((alone.structuredContent as Batch).entries[0]?.kind).toBe('full');
+    boundedBuilds();
+    const remaining = Array.from({ length: 199 }, (_, i) => `CWE-${10000 + i}`);
+    const wire = await runToolContract(cweGetWeakness, { ids: ['1', ...remaining] });
+    bounded(wire);
+    boundedBuilds();
+    const data = wire.structuredContent as Batch;
+    expect(data.entries).toEqual([
+      expect.objectContaining({
+        id: 'CWE-1',
+        kind: 'partial',
+        description: 'd'.repeat(1500),
+        outline: [{ section: 'mitigations', sizeInBytes: expect.any(Number) }],
+        notice:
+          'The source entry has no content for these selected sections: relations. Omitted to fit the 24,000-byte response budget: mitigations. Repeat cwe_get_weakness with this ID and sections ["mitigations"].',
+      }),
+    ]);
+    expect(data.notFound).toEqual([]);
+    expect(data.deferredIds).toEqual(remaining);
+    disclosed(wire);
+    expect(JSON.stringify(wire)).not.toMatch(/oversiz|exceed the 24,000/);
+    // An explicit selection stays complete and discloses its size, within the same build bound.
+    const explicit = await runToolContract(cweGetWeakness, {
+      ids: ['1', ...remaining],
+      sections: ['summary', 'consequences', 'mitigations', 'relations'],
+    });
+    boundedBuilds();
+    expect(bytes(explicit)).toBeGreaterThan(budget);
+    expect((explicit.structuredContent as Batch).entries).toEqual([
+      expect.objectContaining({ id: 'CWE-1', kind: 'full' }),
+    ]);
+    expect(JSON.stringify(explicit.content)).toContain('m'.repeat(7000));
+    disclosed(explicit);
+  });
+
+  it('builds the oversized fallback once when not even an outline fits beside the deferred IDs', async () => {
+    await loadSections(1, { summary: 1500, consequence: 1500, mitigation: 7000 });
+    const remaining = Array.from({ length: 199 }, (_, i) => `CWE-${i + 1}${'0'.repeat(40)}`);
+    const wire = await runToolContract(cweGetWeakness, {
+      ids: ['1', ...remaining.map((id) => id.slice(4))],
+    });
+    expect(wire.isError).not.toBe(true);
+    boundedBuilds();
+    const data = wire.structuredContent as Batch;
+    expect(data.entries).toEqual([expect.objectContaining({ id: 'CWE-1', kind: 'outline' })]);
+    expect(data.deferredIds).toEqual(remaining);
+    expect(bytes(wire)).toBeGreaterThan(budget);
+    // The outline fits on its own; the deferred-ID echo is what overflows.
+    for (const surface of [wire.content, wire.structuredContent]) {
+      expect(JSON.stringify(surface)).toContain(deferredOverflow);
+      expect(JSON.stringify(surface)).not.toContain('One complete selected record');
+    }
+  });
+
+  it.each(['cwe', 'capec'] as const)(
+    'names what overflows a %s detail response: the record, or the deferred-ID echo',
+    async (kind) => {
+      const description = '界'.repeat(9000);
+      await load(description, 1);
+      const call = (args: { ids: string[]; sections?: string[] }) =>
+        kind === 'cwe'
+          ? runToolContract(cweGetWeakness, args)
+          : runToolContract(cweGetAttackPattern, args);
+      const toolName = kind === 'cwe' ? 'cwe_get_weakness' : 'cwe_get_attack_pattern';
+      /** The batch guidance, as structuredContent carries it and `content[]` renders it. */
+      const guidance = (wire: Wire) => {
+        const { guidance } = wire.structuredContent as { guidance?: string };
+        expect(lines(wire)).toContain(`> ${guidance}`);
+        return guidance;
+      };
+
+      const record = await call({ ids: ['1'], sections: ['summary'] });
+      expect(record.isError).not.toBe(true);
+      boundedBuilds();
+      expect(bytes(record)).toBeGreaterThan(budget);
+      expect((record.structuredContent as Batch).entries).toEqual([
+        expect.objectContaining({ kind: 'full', description }),
+      ]);
+      expect(guidance(record)).toBe(
+        'One complete selected record and its metadata exceed the 24,000-byte response budget; returned intact to preserve forward progress.',
+      );
+
+      // 200 long items that are no ID: the first is processed and every other one is echoed.
+      const items = Array.from(
+        { length: 200 },
+        (_, i) => `item ${String(i).padStart(3, '0')} ${'x'.repeat(141)}`,
+      );
+      const echo = await call({ ids: items });
+      expect(echo.isError).not.toBe(true);
+      boundedBuilds();
+      expect(bytes(echo)).toBeGreaterThan(budget);
+      const data = echo.structuredContent as Batch;
+      expect(data.entries).toEqual([]);
+      expect(data.notFound).toEqual([expect.objectContaining({ id: items[0] })]);
+      expect(data.deferredIds).toEqual(items.slice(1));
+      expect(guidance(echo)).toBe(
+        `The 24,000-byte response budget deferred whole identifiers. ${deferredOverflow} Repeat ${toolName} with deferredIds to retrieve the remaining entries.`,
+      );
+      // The enrichment notice repeats the same disclosure.
+      expect((echo.structuredContent as { notice?: string }).notice).toBe(guidance(echo));
+    },
+  );
 
   it('budgets hierarchy edges with all endpoint nodes and exhaustive continuation', async () => {
     await load('Record.', 35, '界'.repeat(150));
@@ -329,6 +592,62 @@ describe('complete delivered response budget', () => {
       expect(edges.length).toBeLessThanOrEqual(34);
     } while (cursor);
     expect(edges).toEqual(Array.from({ length: 34 }, (_, i) => `CWE-${i + 2}`));
+  });
+
+  it('fits a page with a logarithmic number of builds and selects what the linear walk selects', () => {
+    /** The walk the search replaces: the largest fitting count from the top down, else oversized. */
+    function linear(maximum: number, size: (count: number) => number): number {
+      for (let count = maximum; count >= Math.min(1, maximum); count--)
+        if (size(count) <= RESPONSE_BUDGET) return count;
+      return -1;
+    }
+    for (const maximum of [1, 2, 3, 7, 8, 9, 20, 99, 100, 1000]) {
+      const fits =
+        maximum <= 100
+          ? Array.from({ length: maximum + 1 }, (_, fit) => fit)
+          : [0, 1, 2, 3, 499, 500, 998, 999, 1000];
+      for (const fit of fits) {
+        /**
+         * Size grows with the count past `fit`. The complete page carries no budget notice, so it
+         * can measure smaller than the page one item shorter.
+         */
+        const shapes = [
+          (count: number) => RESPONSE_BUDGET - fit + count,
+          (count: number) => RESPONSE_BUDGET - fit + count + (count < maximum ? 50 : 0),
+        ];
+        for (const size of shapes) {
+          // The oversized fallback is a build too, and it counts toward the bound.
+          let builds = 0;
+          const oversizedCounts: number[] = [];
+          const selected = selectWithinBudget(
+            maximum,
+            (count, oversized) => {
+              builds++;
+              if (!oversized) return count;
+              oversizedCounts.push(count);
+              return -1;
+            },
+            size,
+          );
+          expect(selected, `maximum ${maximum}, fit ${fit}`).toBe(linear(maximum, size));
+          expect(oversizedCounts, `maximum ${maximum}, fit ${fit}`).toEqual(
+            selected === -1 ? [1] : [],
+          );
+          expect(builds, `maximum ${maximum}, fit ${fit}`).toBeLessThanOrEqual(
+            Math.ceil(Math.log2(maximum)) + 2,
+          );
+        }
+      }
+    }
+    let builds = 0;
+    const count = (value: number, oversized: boolean) => {
+      builds++;
+      return oversized ? -1 : value;
+    };
+    expect(selectWithinBudget(5, count, undefined)).toBe(5);
+    expect(selectWithinBudget(0, count, () => RESPONSE_BUDGET + 1)).toBe(-1);
+    expect(selectWithinBudget(0, count, () => RESPONSE_BUDGET)).toBe(0);
+    expect(builds).toBe(4);
   });
 
   it('keeps empty pages bounded and terminal', async () => {

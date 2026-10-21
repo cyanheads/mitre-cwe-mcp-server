@@ -5,36 +5,40 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import {
+  type CatalogSnapshot,
+  compileViewFilter,
+  escapeMarkdown,
   getCatalogService,
   resolveVocabulary,
   searchWeaknesses,
+  someTokenMatches,
   type WeaknessFilters,
 } from '@/services/index.js';
 import {
-  type CatalogPage,
   catalogEnrichmentTrailer,
-  deliveredSize,
+  filterPhrase,
+  filterSchema,
+  firstSentence,
   formatCatalog,
   list,
+  normalizeFilter,
   normalizeId,
+  OPTIONAL_CWE_ID,
   optionalInputEnum,
   optionalText,
-  pageEnrichment,
-  pageItems,
+  pageResponse,
   paginationSchema,
   pagingShape,
   provenanceSchema,
+  termsRepeat,
   text,
+  VIEW_ID_FORMS,
 } from '../shared.js';
 
-const sentenceSegmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
-
 const filtersShape = {
-  filter: text(
-    'All whitespace-separated tokens must match name, description, or extended description; blank means unset.',
-  )
-    .max(500)
-    .optional(),
+  filter: filterSchema(
+    'All whitespace-separated tokens must match the name, a recorded alternate term, the description, or the extended description; blank means unset.',
+  ),
   language: text(
     'Exact platform language name or class; discover with cwe_list_reference topic platforms.',
   ).optional(),
@@ -50,16 +54,73 @@ const filtersShape = {
   status: text(
     'Exact source status; omission includes all statuses, including Deprecated.',
   ).optional(),
-  viewId: text(
-    'CWE view ID or bare integer from cwe_list_reference topic views; matches its same-view weakness membership closure.',
+  mappingUsage: text(
+    'Exact MITRE vulnerability mapping usage, such as Allowed or Allowed-with-Review; discover values with cwe_list_reference topic filter_values.',
   ).optional(),
+  viewId: z
+    .string()
+    .regex(OPTIONAL_CWE_ID, VIEW_ID_FORMS)
+    .describe(
+      'CWE view ID such as CWE-1000 or 1000, from cwe_list_reference topic views; matches the weaknesses its recorded members reach within the view, or that its source filter selects for a filter-defined view. Blank means unset.',
+    )
+    .optional(),
 };
+
+/**
+ * Disclose a filter-defined view's filter that cannot be evaluated, then explain a zero-hit search
+ * by what emptied it: the view itself, the view beside the other filters, vocabulary filters, or
+ * text. A suggested repeat is always one that can return weaknesses, so a zero-hit `viewId` search
+ * with other filters runs the view alone, or the other filters alone, when its notice needs that,
+ * and a zero-hit text filter of several tokens checks whether one token matches on its own.
+ */
+function searchNotice(
+  snapshot: CatalogSnapshot,
+  filters: WeaknessFilters,
+  matched: boolean,
+): string | undefined {
+  const { viewId, ...others } = filters;
+  if (viewId !== undefined) {
+    /**
+     * searchWeaknesses has validated the view. With no other filter the search was the view alone,
+     * and without viewId it would return the whole catalog, which always holds a weakness.
+     */
+    const narrowed = !matched && Object.keys(others).length > 0;
+    const widen = () =>
+      !narrowed || searchWeaknesses(snapshot, others).length
+        ? 'repeat cwe_search_weaknesses without viewId'
+        : 'repeat cwe_search_weaknesses with fewer filters';
+    const filterDefinition = snapshot.cwe.views.get(viewId)?.filterDefinition;
+    if (filterDefinition !== undefined && !compileViewFilter(filterDefinition))
+      return `View ${viewId} is defined by a source filter (filterDefinition) with a part this server does not evaluate, so the filter selected no weaknesses here; this does not establish that none belong to the view. Call cwe_get_view to read the filter, or ${widen()}.`;
+    if (matched) return undefined;
+    if (!narrowed || !searchWeaknesses(snapshot, { viewId }).length)
+      return filterDefinition !== undefined
+        ? `The source filter of view ${viewId} selects no weaknesses. Call cwe_get_view to read its filterDefinition.`
+        : `View ${viewId} records no membership that reaches a weakness; this does not establish that none belong to it. Call cwe_get_view to read the view.`;
+    // The view holds weaknesses, so dropping the other filters returns some.
+    return filterDefinition !== undefined
+      ? `No weakness that the source filter of view ${viewId} selects matches the other filters. Call cwe_get_view to read its filterDefinition, or repeat cwe_search_weaknesses with fewer filters.`
+      : `No weaknesses matched this view and the other filters. Call cwe_get_view for its direct members, or ${widen()}.`;
+  }
+  if (matched) return undefined;
+  const { filter } = filters;
+  if (filter === undefined || Object.keys(filters).length > 1)
+    return `No weaknesses matched the applied filters (${Object.entries(filters)
+      .map(([key, value]) => `${key}: ${escapeMarkdown(value)}`)
+      .join(
+        ', ',
+      )}). Call cwe_list_reference for supported vocabulary, or repeat cwe_search_weaknesses with fewer filters.`;
+  return `No weakness matched ${filterPhrase(filter)}. Repeat cwe_search_weaknesses with ${termsRepeat(
+    filter,
+    () => someTokenMatches(snapshot, 'cwe', filter),
+  )}.`;
+}
 
 /** Search CWE weaknesses using source vocabulary and complete local membership. */
 export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
   title: 'Search CWE weaknesses',
   description:
-    'Search CWE weaknesses by all text tokens, exact platform or consequence vocabulary, abstraction, status, or view membership. Omit filters to browse; categories are excluded. Results order by all tokens in name, then description, then extended description, then numeric ID. Description previews contain the first sentence; use cwe_get_weakness for complete sections. Follow nextCursor for remaining matches.',
+    'Search CWE weaknesses by all text tokens, exact platform or consequence vocabulary, abstraction, status, mapping usage, or view membership. Omit filters to browse; categories are excluded. Each result carries MITRE’s mapping usage, which says whether the entry may be used to map a vulnerability. Results order by all tokens in the name or in one recorded alternate term such as XSS, then all in the description, then any other match, then numeric ID. Description previews contain the first sentence; use cwe_get_weakness for complete sections. Follow nextCursor for remaining matches.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({ ...filtersShape, ...pagingShape }),
   output: z.object({
@@ -70,8 +131,11 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
           name: text('Source weakness name.'),
           status: text('Source status.'),
           abstraction: text('Source abstraction.').optional(),
+          mappingUsage: text(
+            'Source vulnerability mapping usage, such as Allowed or Prohibited; absent when not recorded.',
+          ).optional(),
           sourceUrl: text('Official definition URL.'),
-          descriptionPreview: text('First complete source description sentence.'),
+          descriptionPreview: text('First complete sentence of the CommonMark source description.'),
           likelihoodOfExploit: text('Source exploit likelihood.').optional(),
         })
         .describe('Matching weakness preview.'),
@@ -89,6 +153,7 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
         abstraction: text('Canonical abstraction.').optional(),
         consequenceImpact: text('Canonical consequence impact.').optional(),
         status: text('Canonical status.').optional(),
+        mappingUsage: text('Canonical mapping usage.').optional(),
         viewId: text('Canonical view ID.').optional(),
         limit: z.number().int().describe('Effective page limit.'),
       })
@@ -120,7 +185,7 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
   handler(input, ctx) {
     const snapshot = getCatalogService().snapshot();
     const filters: WeaknessFilters = {};
-    const filter = optionalText(input.filter)?.toLowerCase().split(/\s+/).join(' ');
+    const filter = normalizeFilter(input.filter);
     if (filter) filters.filter = filter;
     for (const [field, vocabulary] of [
       ['language', 'languages'],
@@ -128,64 +193,46 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
       ['abstraction', 'cweAbstractions'],
       ['consequenceImpact', 'consequenceImpacts'],
       ['status', 'cweStatuses'],
+      ['mappingUsage', 'cweMappingUsages'],
     ] as const) {
       const value = optionalText(input[field]);
-      if (value) filters[field] = resolveVocabulary(snapshot, vocabulary, value);
+      if (value) filters[field] = resolveVocabulary(snapshot, vocabulary, field, value);
     }
     const viewId = optionalText(input.viewId);
-    if (viewId) filters.viewId = normalizeId(viewId, 'CWE');
+    if (viewId) filters.viewId = normalizeId(viewId);
     const matches = searchWeaknesses(snapshot, filters);
     if (!matches.length && !Object.keys(filters).length)
       throw serviceUnavailable('The loaded CWE catalog contains no weaknesses.', {
         retryable: false,
       });
-    const notices: string[] = [];
-    if (!matches.length)
-      notices.push(
-        filters.viewId
-          ? 'No weaknesses matched this view and the other filters. Call cwe_get_view for its direct members, or repeat cwe_search_weaknesses without viewId.'
-          : Object.keys(filters).some((key) => key !== 'filter')
-            ? `No weaknesses matched the applied filters (${Object.entries(filters)
-                .map(([key, value]) => `${key}: ${value}`)
-                .join(
-                  ', ',
-                )}). Call cwe_list_reference for supported vocabulary, or repeat cwe_search_weaknesses with fewer filters.`
-            : 'No weakness matched every text token. Repeat cwe_search_weaknesses with fewer terms.',
-      );
+    const notice = searchNotice(snapshot, filters, matches.length > 0);
     const previews = matches.map((entry) => ({
       id: entry.id,
       name: entry.name,
       status: entry.status,
       sourceUrl: entry.sourceUrl,
-      descriptionPreview:
-        sentenceSegmenter.segment(entry.description).containing(0)?.segment.trim() ??
-        entry.description,
+      descriptionPreview: firstSentence(entry.description),
       ...(entry.abstraction !== undefined ? { abstraction: entry.abstraction } : {}),
+      ...(entry.mappingNotes?.usage !== undefined
+        ? { mappingUsage: entry.mappingNotes.usage }
+        : {}),
       ...(entry.likelihoodOfExploit !== undefined
         ? { likelihoodOfExploit: entry.likelihoodOfExploit }
         : {}),
     }));
-    const output = (page: CatalogPage<(typeof previews)[number]>) => ({
-      results: page.items,
-      pagination: page.pagination,
+    const { output, enrichment } = pageResponse(previews, input, {
+      binding: ['cwe_search_weaknesses', filters],
       provenance: snapshot.provenance,
+      appliedFilters: filters,
+      notice,
+      output: (page) => ({
+        results: page.items,
+        pagination: page.pagination,
+        provenance: snapshot.provenance,
+      }),
     });
-    const enrichment = (page: CatalogPage<(typeof previews)[number]>) =>
-      pageEnrichment(
-        page,
-        input.limit,
-        { ...filters, limit: Math.min(input.limit, 100) },
-        notices.join(' '),
-      );
-    const page = pageItems(
-      previews,
-      input,
-      ['cwe_search_weaknesses', filters, Math.min(input.limit, 100)],
-      snapshot.provenance,
-      (candidate) => deliveredSize(output(candidate), enrichment(candidate)),
-    );
-    ctx.enrich(enrichment(page));
-    return output(page);
+    ctx.enrich(enrichment);
+    return output;
   },
   format: formatCatalog,
 });

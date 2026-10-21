@@ -2,6 +2,7 @@
  * @fileoverview Fixed-origin, bounded and cancellable MITRE catalog acquisition.
  * @module services/catalog/acquisition
  */
+import { z } from '@cyanheads/mcp-ts-core';
 import { McpError, serializationError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import {
   defaultIsTransient,
@@ -12,7 +13,7 @@ import {
 } from '@cyanheads/mcp-ts-core/utils';
 import { Unzip, UnzipInflate } from 'fflate';
 import type { CapecCatalog, CatalogMetadata, CweCatalog, HttpRequest } from './types.js';
-import { parseCapecCatalog, parseCweCatalog } from './xml-normalization.js';
+import { collapse, parseCapecCatalog, parseCweCatalog } from './xml-normalization.js';
 
 /** Fixed upstream locations; callers cannot supply destinations. */
 export const SOURCE_URLS = Object.freeze({
@@ -29,6 +30,50 @@ export const BYTE_LIMITS = Object.freeze({
   hierarchy: 10 * 1024 * 1024,
   version: 64 * 1024,
 });
+const CRC_TABLE = Uint32Array.from({ length: 256 }, (_, initial) => {
+  let value = initial;
+  for (let bit = 0; bit < 8; bit++) value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0);
+  return value >>> 0;
+});
+/** Version metadata renders as plain values, so it is whitespace-collapsed like catalog text. */
+const versionSchema = z.object({
+  ContentVersion: z.string().transform(collapse).pipe(z.string().min(1)),
+  ContentDate: z.string().transform(collapse).pipe(z.string().min(1)),
+});
+
+/** MITRE's edge answers a burst of requests from one address with HTTP 403 for several minutes. */
+export function isRefusal(error: unknown): error is McpError {
+  return error instanceof McpError && error.data?.status === 403;
+}
+/** The caller may retry after a wait; an immediate retry within the call lands in the same block. */
+export function refused(subject = 'request', hint?: string): McpError {
+  return serviceUnavailable(
+    `MITRE temporarily refused the ${subject} (HTTP 403). Wait a few minutes before retrying.`,
+    {
+      reason: 'upstream_http',
+      status: 403,
+      retryable: true,
+      ...(hint ? { recovery: { hint } } : {}),
+    },
+  );
+}
+/** Retry transient upstream failures within a call, never a refusal. */
+export function isTransientUpstream(error: unknown): boolean {
+  return !isRefusal(error) && defaultIsTransient(error);
+}
+
+/** Every source pipeline shares one bounded retry policy. */
+function sourceRetry(operation: string, context: RequestContext, signal: AbortSignal) {
+  return {
+    maxRetries: 2,
+    baseDelayMs: 1000,
+    deadlineMs: 45000,
+    operation,
+    context,
+    signal,
+    isTransient: isTransientUpstream,
+  };
+}
 
 function invalidArchive(): never {
   throw serializationError('The CWE archive is invalid or contains unexpected members.', {
@@ -45,6 +90,10 @@ function tooLarge(): never {
 
 async function ensureStatus(response: Response, acceptNotModified = false): Promise<Response> {
   if (response.ok || (acceptNotModified && response.status === 304)) return response;
+  if (response.status === 403) {
+    await response.body?.cancel();
+    throw refused();
+  }
   const error = await httpErrorFromResponse(response, { service: 'MITRE', captureBody: false });
   // Keep framework status mapping and Retry-After, without echoing remote bodies or paths.
   await response.body?.cancel();
@@ -71,6 +120,7 @@ export const defaultHttpRequest: HttpRequest = async (url, options, timeoutMs, c
     });
   } catch (cause) {
     options.signal.throwIfAborted();
+    if (isRefusal(cause)) throw refused();
     if (cause instanceof McpError) {
       const data = Object.fromEntries(
         Object.entries(cause.data ?? {}).filter(([key]) =>
@@ -206,11 +256,6 @@ export function extractCweXml(bytes: Uint8Array, signal: AbortSignal): string {
   let members = 0;
   let complete = false;
   let crc = 0xffffffff;
-  const crcTable = Uint32Array.from({ length: 256 }, (_, initial) => {
-    let value = initial;
-    for (let bit = 0; bit < 8; bit++) value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0);
-    return value >>> 0;
-  });
   const unzip = new Unzip((file) => {
     members++;
     if (
@@ -225,7 +270,7 @@ export function extractCweXml(bytes: Uint8Array, signal: AbortSignal): string {
       signal.throwIfAborted();
       size += chunk.byteLength;
       if (size > BYTE_LIMITS.cweXml || size > expected.size) tooLarge();
-      for (const byte of chunk) crc = (crc >>> 8) ^ (crcTable[(crc ^ byte) & 0xff] as number);
+      for (const byte of chunk) crc = (crc >>> 8) ^ (CRC_TABLE[(crc ^ byte) & 0xff] as number);
       chunks.push(chunk);
       complete = final;
     };
@@ -274,10 +319,17 @@ export interface AcquiredCatalog<T> {
   lastModified?: string;
 }
 
+/**
+ * Validators also render as plain values. Fetch strips HTTP whitespace from header edges but keeps
+ * a no-break space, which an entity tag cannot hold outside its quotes, so the edges are trimmed.
+ */
 function validators(response: Response): { etag?: string; lastModified?: string } {
-  const etag = response.headers.get('etag');
-  const lastModified = response.headers.get('last-modified');
-  return { ...(etag !== null ? { etag } : {}), ...(lastModified !== null ? { lastModified } : {}) };
+  const etag = response.headers.get('etag')?.trim();
+  const lastModified = response.headers.get('last-modified')?.trim();
+  return {
+    ...(etag !== undefined ? { etag } : {}),
+    ...(lastModified !== undefined ? { lastModified } : {}),
+  };
 }
 
 /** One source pipeline owns retries, including its stream and deterministic parser. */
@@ -304,14 +356,7 @@ export function acquireCwe(
       attempt.signal.throwIfAborted();
       return { catalog, ...validators(response) };
     },
-    {
-      maxRetries: 2,
-      baseDelayMs: 1000,
-      deadlineMs: 45000,
-      operation: 'acquireCwe',
-      context,
-      signal,
-    },
+    sourceRetry('acquireCwe', context, signal),
   );
 }
 
@@ -354,14 +399,7 @@ export function acquireCapec(
       attempt.signal.throwIfAborted();
       return { catalog, ...validators(response) };
     },
-    {
-      maxRetries: 2,
-      baseDelayMs: 1000,
-      deadlineMs: 45000,
-      operation: 'acquireCapec',
-      context,
-      signal,
-    },
+    sourceRetry('acquireCapec', context, signal),
   );
 }
 
@@ -397,30 +435,14 @@ export function acquireCweVersion(
           { cause },
         );
       }
-      if (
-        typeof parsed !== 'object' ||
-        parsed === null ||
-        !('ContentVersion' in parsed) ||
-        typeof parsed.ContentVersion !== 'string' ||
-        !parsed.ContentVersion ||
-        !('ContentDate' in parsed) ||
-        typeof parsed.ContentDate !== 'string' ||
-        !parsed.ContentDate
-      ) {
+      const metadata = versionSchema.safeParse(parsed);
+      if (!metadata.success)
         throw serializationError('MITRE returned unsupported version metadata.', {
           reason: 'invalid_version',
           retryable: false,
         });
-      }
-      return { version: parsed.ContentVersion, date: parsed.ContentDate };
+      return { version: metadata.data.ContentVersion, date: metadata.data.ContentDate };
     },
-    {
-      maxRetries: 2,
-      baseDelayMs: 1000,
-      deadlineMs: 45000,
-      operation: 'acquireCweVersion',
-      context,
-      signal,
-    },
+    sourceRetry('acquireCweVersion', context, signal),
   );
 }

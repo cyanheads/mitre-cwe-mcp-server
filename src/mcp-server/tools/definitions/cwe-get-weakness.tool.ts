@@ -19,10 +19,10 @@ import {
 export const cweGetWeakness = tool('cwe_get_weakness', {
   title: 'Retrieve CWE weaknesses',
   description:
-    'Retrieve CWE weaknesses or categories by CWE-N or bare numeric IDs. Processes up to 20 distinct IDs within a 24,000-byte response budget and discloses deferred IDs. Defaults to summary, consequences, mitigations, and relations; oversized defaults become outlines. Explicit sections remain complete, including one oversized record with disclosure; an empty sections array requests an outline. Select examples and use exampleOffset/exampleLimit for complete source-ordered example pages. Categories are organizational entries, not vulnerability root causes.',
+    'Retrieve CWE weaknesses or categories by ID, such as CWE-79, CWE79, or 79. Processes up to 20 distinct IDs within a 24,000-byte response budget and discloses deferred IDs; a view, a CAPEC ID, or an item that is no ID returns in notFound with recovery guidance; only an item holding a control character other than whitespace, or a non-ID item over 150 characters, rejects the whole call. Defaults to summary, consequences, mitigations, and relations; a default section that does not fit the budget is omitted whole and named with its size and a re-call (kind partial). Summary carries recorded alternate terms such as XSS, ordinalities (Primary, Resultant, Indirect), and background details; the notes section, outside the defaults, returns every note MITRE records, such as Relationship, Maintenance, Terminology, and Research Gap notes. Explicit sections remain complete, including one oversized record with disclosure; an empty sections array requests an outline. Select examples and use exampleOffset/exampleLimit for complete source-ordered example pages. Categories are organizational entries, not vulnerability root causes.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    ids: idsSchema,
+    ids: idsSchema('CWE'),
     sections: list(
       inputEnum(weaknessSections).describe('A supported CWE detail section.'),
       'Selected sections; omit for defaults, or pass an empty array for an outline.',

@@ -275,16 +275,40 @@ describe('acquisition pipelines', () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['not-json', '{}', '{"ContentVersion":4,"ContentDate":"date"}'])(
-    'rejects invalid version metadata %s without retries',
-    async (body) => {
-      const request = vi.fn<HttpRequest>().mockResolvedValue(new Response(body));
-      await expect(acquireCweVersion(request, context(), signal())).rejects.toMatchObject({
-        data: { reason: 'invalid_version', retryable: false },
-      });
-      expect(request).toHaveBeenCalledOnce();
-    },
-  );
+  it('stores version metadata and validators without edge whitespace or line breaks', async () => {
+    const version = vi
+      .fn<HttpRequest>()
+      .mockResolvedValue(
+        Response.json({ ContentVersion: ' 4.20\r\n', ContentDate: ' April\r\n 30, 2026　' }),
+      );
+    await expect(acquireCweVersion(version, context(), signal())).resolves.toEqual({
+      version: '4.20',
+      date: 'April 30, 2026',
+    });
+    // Header values arrive without HTTP whitespace at their edges, but may keep a no-break space.
+    const download = vi.fn<HttpRequest>().mockResolvedValueOnce(
+      new Response(capecXml, {
+        headers: { etag: ' "capec-tag" ', 'last-modified': ' Tue, 24 Jan 2023' },
+      }),
+    );
+    await expect(acquireCapec(download, context(), signal())).resolves.toMatchObject({
+      etag: '"capec-tag"',
+      lastModified: 'Tue, 24 Jan 2023',
+    });
+  });
+
+  it.each([
+    'not-json',
+    '{}',
+    '{"ContentVersion":4,"ContentDate":"date"}',
+    '{"ContentVersion":" \\r\\n ","ContentDate":"date"}',
+  ])('rejects invalid version metadata %s without retries', async (body) => {
+    const request = vi.fn<HttpRequest>().mockResolvedValue(new Response(body));
+    await expect(acquireCweVersion(request, context(), signal())).rejects.toMatchObject({
+      data: { reason: 'invalid_version', retryable: false },
+    });
+    expect(request).toHaveBeenCalledOnce();
+  });
 
   it('retries network and HTML failures through a complete successful version parse', async () => {
     vi.useFakeTimers();
@@ -314,6 +338,70 @@ describe('acquisition pipelines', () => {
     await assertion;
     expect(request.mock.calls[0]?.[1].signal.aborted).toBe(true);
     expect(cancel).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledOnce();
+  });
+});
+
+describe('acquisition through the production HTTP adapter', () => {
+  /** The default adapter (fetchWithTimeout) throws for every non-2xx status itself. */
+  const stubFetch = (respond: () => Response) => {
+    const fetch = vi.fn(async () => respond());
+    vi.stubGlobal('fetch', fetch);
+    return fetch;
+  };
+  const settle = async <T>(pending: Promise<T>) => {
+    const outcome = pending.catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    return outcome;
+  };
+
+  it.each([
+    [401, JsonRpcErrorCode.Unauthorized, false],
+    [404, JsonRpcErrorCode.NotFound, false],
+    [429, JsonRpcErrorCode.RateLimited, true],
+    [500, JsonRpcErrorCode.ServiceUnavailable, true],
+    [501, JsonRpcErrorCode.ServiceUnavailable, false],
+  ] as const)(
+    'classifies HTTP %s and applies its retry policy',
+    async (status, code, retryable) => {
+      vi.useFakeTimers();
+      const fetch = stubFetch(() => new Response(null, { status }));
+      expect(
+        await settle(acquireCweVersion(defaultHttpRequest, context(), signal())),
+      ).toMatchObject({ code, data: { reason: 'upstream_http', status, retryable } });
+      expect(fetch).toHaveBeenCalledTimes(retryable ? 3 : 1);
+    },
+  );
+
+  it.each<[string, () => Promise<unknown>]>([
+    ['version check', () => acquireCweVersion(defaultHttpRequest, context(), signal())],
+    ['CWE download', () => acquireCwe(defaultHttpRequest, context(), signal())],
+    ['CAPEC download', () => acquireCapec(defaultHttpRequest, context(), signal())],
+  ])(
+    'reports an edge 403 on the %s as a temporary refusal after one request',
+    async (_source, acquire) => {
+      vi.useFakeTimers();
+      const fetch = stubFetch(
+        () => new Response('{"supportID": "8278137309397805653"}', { status: 403 }),
+      );
+      const error = (await settle(acquire())) as { message: string; data: unknown };
+      expect(error).toMatchObject({
+        code: JsonRpcErrorCode.ServiceUnavailable,
+        message: expect.stringMatching(/MITRE temporarily refused .*wait a few minutes/i),
+        data: { status: 403, retryable: true },
+      });
+      expect(JSON.stringify([error.message, error.data])).not.toContain('8278137309397805653');
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('maps a 403 Response from an injected adapter the same way', async () => {
+    vi.useFakeTimers();
+    const request = vi.fn<HttpRequest>(async () => new Response(null, { status: 403 }));
+    expect(await settle(acquireCweVersion(request, context(), signal()))).toMatchObject({
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      data: { status: 403, retryable: true },
+    });
     expect(request).toHaveBeenCalledOnce();
   });
 });

@@ -18,7 +18,15 @@ import {
   type RequestContext,
   withRetry,
 } from '@cyanheads/mcp-ts-core/utils';
-import { BYTE_LIMITS, defaultHttpRequest, readBoundedBody, SOURCE_URLS } from './acquisition.js';
+import {
+  BYTE_LIMITS,
+  defaultHttpRequest,
+  isRefusal,
+  isTransientUpstream,
+  readBoundedBody,
+  refused,
+  SOURCE_URLS,
+} from './acquisition.js';
 import { systemCatalogClock } from './catalog-service.js';
 import type {
   CatalogClock,
@@ -28,6 +36,7 @@ import type {
   HierarchyNode,
   HttpRequest,
 } from './types.js';
+import { collapse } from './xml-normalization.js';
 
 /** Recovery also accompanies baseline upstream failures without changing their codes. */
 export const HIERARCHY_RECOVERY =
@@ -56,6 +65,8 @@ export interface HierarchyServiceOptions {
 type RawNode = { ID: string; Type: string; ViewID: string; Primary_Parent?: boolean };
 type QueueEntry = { start(): void; cancel(): void };
 
+const REFUSAL_RECOVERY =
+  'Wait a few minutes, then repeat cwe_get_hierarchy; call cwe_get_weakness for recorded relations meanwhile.';
 function invalid(): never {
   throw serviceUnavailable('MITRE returned an inconsistent hierarchy.', {
     reason: 'hierarchy_unavailable',
@@ -67,19 +78,22 @@ function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalid();
   return value as Record<string, unknown>;
 }
-function rawNode(value: unknown): RawNode {
+/** Flat rows may omit ViewID; only a single-view children request supplies the missing view. */
+function rawNode(value: unknown, fallbackView?: string): RawNode {
   const node = object(value);
+  const viewId = node.ViewID ?? fallbackView;
   if (
     typeof node.ID !== 'string' ||
     !/^[1-9]\d*$/.test(node.ID) ||
-    typeof node.ViewID !== 'string' ||
-    !/^[1-9]\d*$/.test(node.ViewID) ||
+    typeof viewId !== 'string' ||
+    !/^[1-9]\d*$/.test(viewId) ||
     typeof node.Type !== 'string' ||
     !node.Type.trim() ||
     (node.Primary_Parent !== undefined && typeof node.Primary_Parent !== 'boolean')
   )
     invalid();
-  return node as RawNode;
+  // The type renders as a plain value, so it is whitespace-collapsed like catalog text.
+  return { ...(node as RawNode), Type: collapse(node.Type), ViewID: viewId };
 }
 function key(node: Pick<HierarchyNode, 'id' | 'viewId'>): string {
   return `${node.viewId}:${node.id}`;
@@ -93,9 +107,29 @@ function rootType(id: string, snapshot: CatalogSnapshot): string {
   if (!weakness) return 'unknown';
   return weakness.abstraction ? `${weakness.abstraction.toLowerCase()}_weakness` : weakness.type;
 }
+function record(id: string, snapshot: CatalogSnapshot) {
+  return snapshot.cwe.weaknesses.get(id) ?? snapshot.cwe.views.get(id);
+}
+function hydrate(raw: RawNode, snapshot: CatalogSnapshot): HierarchyNode {
+  const id = `CWE-${raw.ID}`;
+  const known = record(id, snapshot);
+  return {
+    id,
+    type: raw.Type,
+    viewId: `CWE-${raw.ViewID}`,
+    ...(known ? { name: known.name, status: known.status, sourceUrl: known.sourceUrl } : {}),
+    ...(known && 'abstraction' in known && known.abstraction !== undefined
+      ? { abstraction: known.abstraction }
+      : {}),
+  };
+}
 
-/** Validate the full flat/tree response iteratively before returning any topology. */
-export function normalizeHierarchy(
+/**
+ * Validate the full flat/tree response iteratively before returning any topology. Parents
+ * arrive unscoped and children in every view arrive as an unscoped descendants tree, so both
+ * are validated whole, then projected to the requested view or to the first level.
+ */
+function normalizeHierarchy(
   value: unknown,
   input: HierarchyInput,
   snapshot: CatalogSnapshot,
@@ -104,31 +138,21 @@ export function normalizeHierarchy(
   const nodes = new Map<string, HierarchyNode>();
   const edges = new Map<string, HierarchyEdge>();
   let visited = 0;
-  let drift = false;
   const rootNumber = input.id.slice(4);
+  const responseView = input.direction === 'parents' ? 'all' : input.viewId;
   const addNode = (raw: RawNode, sourceNode = true): HierarchyNode => {
     if (sourceNode && ++visited > 10000) invalid();
-    const id = `CWE-${raw.ID}`;
-    const viewId = `CWE-${raw.ViewID}`;
-    if (input.viewId !== 'all' && input.viewId !== viewId) invalid();
-    const existing = nodes.get(`${viewId}:${id}`);
-    if (existing && existing.type !== raw.Type) invalid();
-    const record = snapshot.cwe.weaknesses.get(id) ?? snapshot.cwe.views.get(id);
-    if (!record) drift = true;
-    const node: HierarchyNode = {
-      id,
-      type: raw.Type,
-      viewId,
-      ...(record ? { name: record.name, status: record.status, sourceUrl: record.sourceUrl } : {}),
-      ...(record && 'abstraction' in record && record.abstraction !== undefined
-        ? { abstraction: record.abstraction }
-        : {}),
-    };
+    const node = hydrate(raw, snapshot);
+    if (responseView !== 'all' && responseView !== node.viewId) invalid();
+    const existing = nodes.get(key(node));
+    if (existing && existing.type !== node.type) invalid();
     nodes.set(key(node), node);
     return node;
   };
   const addEdge = (root: HierarchyNode, relative: HierarchyNode, primary: boolean | undefined) => {
-    if (root.viewId !== relative.viewId || root.id === relative.id) invalid();
+    if (root.viewId !== relative.viewId) invalid();
+    // A view can list itself among its members; the root is never its own relative.
+    if (root.id === relative.id) return;
     const upward = input.direction === 'parents' || input.direction === 'ancestors';
     const edge: HierarchyEdge = {
       parentId: upward ? relative.id : root.id,
@@ -146,9 +170,13 @@ export function normalizeHierarchy(
       invalid();
     edges.set(edgeKey, previous?.primaryParent !== undefined ? previous : edge);
   };
-  if (input.direction === 'parents' || input.direction === 'children') {
+  const childrenInEveryView = input.direction === 'children' && input.viewId === 'all';
+  if (input.direction === 'parents' || (input.direction === 'children' && !childrenInEveryView)) {
+    const fallbackView = input.direction === 'children' ? input.viewId.slice(4) : undefined;
     for (const item of value) {
-      const raw = rawNode(item);
+      const raw = rawNode(item, fallbackView);
+      // Skipped before node creation: a locally unknown root's catalog type is `unknown`.
+      if (raw.ID === rootNumber) continue;
       const relative = addNode(raw);
       const root = addNode(
         { ID: rootNumber, ViewID: raw.ViewID, Type: rootType(input.id, snapshot) },
@@ -178,24 +206,33 @@ export function normalizeHierarchy(
       }
     }
   }
-  // Empty direct relationships retain a locally known root in the selected view.
-  if (!nodes.size && input.viewId !== 'all') {
-    const record = snapshot.cwe.weaknesses.get(input.id) ?? snapshot.cwe.views.get(input.id);
-    if (record)
-      addNode(
-        { ID: rootNumber, ViewID: input.viewId.slice(4), Type: rootType(input.id, snapshot) },
-        false,
-      );
+  let nodeList = [...nodes.values()];
+  let edgeList = [...edges.values()];
+  if (input.direction === 'parents' && input.viewId !== 'all') {
+    edgeList = edgeList.filter((edge) => edge.viewId === input.viewId);
+    nodeList = nodeList.filter((node) => node.viewId === input.viewId);
+  } else if (childrenInEveryView) {
+    edgeList = edgeList.filter((edge) => edge.parentId === input.id);
+    const children = new Set(edgeList.map((edge) => `${edge.viewId}:${edge.childId}`));
+    nodeList = nodeList.filter((node) => node.id === input.id || children.has(key(node)));
   }
+  // Empty direct relationships retain a locally known root in the selected view.
+  if (!nodeList.length && input.viewId !== 'all' && record(input.id, snapshot))
+    nodeList.push(
+      hydrate(
+        { ID: rootNumber, ViewID: input.viewId.slice(4), Type: rootType(input.id, snapshot) },
+        snapshot,
+      ),
+    );
   return {
-    nodes: [...nodes.values()].sort((a, b) => compare(a.viewId, b.viewId) || compare(a.id, b.id)),
-    edges: [...edges.values()].sort(
+    nodes: nodeList.sort((a, b) => compare(a.viewId, b.viewId) || compare(a.id, b.id)),
+    edges: edgeList.sort(
       (a, b) =>
         compare(a.viewId, b.viewId) ||
         compare(a.parentId, b.parentId) ||
         compare(a.childId, b.childId),
     ),
-    drift,
+    drift: nodeList.some((node) => !record(node.id, snapshot)),
   };
 }
 
@@ -284,8 +321,12 @@ export class HierarchyService {
       const remainingMs = 25000 - (this.clock.now() - started);
       if (remainingMs <= 0) expire();
       signal.throwIfAborted();
-      const url = new URL(`${SOURCE_URLS.hierarchy}/${input.id.slice(4)}/${input.direction}`);
-      if (input.viewId !== 'all') url.searchParams.set('view', input.viewId.slice(4));
+      // Unscoped children rows carry no ViewID, and scoped parents omit category and view parents.
+      const path =
+        input.direction === 'children' && input.viewId === 'all' ? 'descendants' : input.direction;
+      const url = new URL(`${SOURCE_URLS.hierarchy}/${input.id.slice(4)}/${path}`);
+      if (input.viewId !== 'all' && input.direction !== 'parents')
+        url.searchParams.set('view', input.viewId.slice(4));
       if (input.primaryOnly) url.searchParams.set('primary', 'true');
       return await withRetry(
         async (attempt) => {
@@ -306,6 +347,7 @@ export class HierarchyService {
               throw cause;
             }
           } catch (cause) {
+            if (isRefusal(cause)) throw refused('hierarchy request', REFUSAL_RECOVERY);
             if (cause instanceof McpError && cause.code === JsonRpcErrorCode.NotFound) {
               if (snapshot.cwe.weaknesses.has(input.id) || snapshot.cwe.views.has(input.id))
                 invalid();
@@ -348,6 +390,7 @@ export class HierarchyService {
           operation: 'cweHierarchy',
           context,
           signal,
+          isTransient: isTransientUpstream,
         },
       );
     } catch (cause) {
@@ -388,7 +431,8 @@ export class HierarchyService {
       edges,
       retrievedAt: new Date(this.clock.now()).toISOString(),
       hierarchyFingerprint: createHash('sha256')
-        .update(JSON.stringify([snapshot.cwe.version, edges]))
+        // Node keys cover roots without edges, which only the first page carries.
+        .update(JSON.stringify([snapshot.cwe.version, edges, nodes.map(key)]))
         .digest('hex'),
     };
   }

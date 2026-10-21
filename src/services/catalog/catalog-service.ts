@@ -11,6 +11,7 @@ import {
 } from '@cyanheads/mcp-ts-core/errors';
 import { logger, type RequestContext, requestContextService } from '@cyanheads/mcp-ts-core/utils';
 import {
+  type AcquiredCatalog,
   acquireCapec,
   acquireCwe,
   acquireCweVersion,
@@ -62,13 +63,36 @@ function clearFailure(health: CatalogHealth): CatalogHealth {
   return rest;
 }
 function counts(catalog: CweCatalog | CapecCatalog): Record<string, number> {
-  if ('attackPatterns' in catalog) return { attackPatterns: catalog.attackPatterns.size };
+  if ('attackPatterns' in catalog)
+    return {
+      attackPatterns: catalog.attackPatterns.size,
+      categories: catalog.categories.size,
+      views: catalog.views.size,
+    };
   return {
     weaknesses: [...catalog.weaknesses.values()].filter((entry) => entry.type === 'weakness')
       .length,
     categories: [...catalog.weaknesses.values()].filter((entry) => entry.type === 'category')
       .length,
     views: catalog.views.size,
+  };
+}
+function initialHealth(
+  { catalog, ...validators }: AcquiredCatalog<CweCatalog | CapecCatalog>,
+  sourceUrl: string,
+  now: number,
+  interval: number,
+): CatalogHealth {
+  const loadedAt = iso(now);
+  return {
+    version: catalog.version,
+    date: catalog.date,
+    sourceUrl,
+    loadedAt,
+    counts: counts(catalog),
+    nextCheckAt: iso(now + interval),
+    lastSuccessfulCheckAt: loadedAt,
+    ...validators,
   };
 }
 
@@ -135,36 +159,14 @@ export class CatalogService {
           retryable: false,
         });
       const now = this.clock.now();
-      const loadedAt = iso(now);
-      const health = {
-        cwe: {
-          ...loadedCwe.catalog,
-          ...loadedCwe,
-          sourceUrl: SOURCE_URLS.cwe,
-          loadedAt,
-          counts: counts(loadedCwe.catalog),
-          nextCheckAt: iso(now + REFRESH_INTERVALS.cwe),
-          lastSuccessfulCheckAt: loadedAt,
-        },
-        capec: {
-          ...loadedCapec.catalog,
-          ...loadedCapec,
-          sourceUrl: SOURCE_URLS.capec,
-          loadedAt,
-          counts: counts(loadedCapec.catalog),
-          nextCheckAt: iso(now + REFRESH_INTERVALS.capec),
-          lastSuccessfulCheckAt: loadedAt,
-        },
-      };
-      // Only root metadata and validators enter health, never the source maps.
       this.current = buildCatalogSnapshot(
         loadedCwe.catalog,
         loadedCapec.catalog,
         {
-          cwe: this.initialHealth(health.cwe),
-          capec: this.initialHealth(health.capec),
+          cwe: initialHealth(loadedCwe, SOURCE_URLS.cwe, now, REFRESH_INTERVALS.cwe),
+          capec: initialHealth(loadedCapec, SOURCE_URLS.capec, now, REFRESH_INTERVALS.capec),
         },
-        loadedAt,
+        iso(now),
       );
       this.scheduleNext();
     } catch (cause) {
@@ -172,22 +174,6 @@ export class CatalogService {
       await Promise.allSettled([cwe, capec]);
       throw cause;
     }
-  }
-
-  private initialHealth(value: CatalogHealth): CatalogHealth {
-    return {
-      version: value.version,
-      date: value.date,
-      sourceUrl: value.sourceUrl,
-      loadedAt: value.loadedAt,
-      counts: value.counts,
-      nextCheckAt: value.nextCheckAt,
-      ...(value.lastSuccessfulCheckAt
-        ? { lastSuccessfulCheckAt: value.lastSuccessfulCheckAt }
-        : {}),
-      ...(value.etag !== undefined ? { etag: value.etag } : {}),
-      ...(value.lastModified !== undefined ? { lastModified: value.lastModified } : {}),
-    };
   }
 
   private scheduleNext(): void {

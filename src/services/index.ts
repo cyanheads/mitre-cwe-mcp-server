@@ -3,50 +3,30 @@
  * @module services
  */
 
-export {
-  type AcquiredCatalog,
-  acquireCapec,
-  acquireCwe,
-  acquireCweVersion,
-  BYTE_LIMITS,
-  defaultHttpRequest,
-  extractCweXml,
-  readBoundedBody,
-  SOURCE_URLS,
-} from './catalog/acquisition.js';
+export { SOURCE_URLS } from './catalog/acquisition.js';
 export {
   type AttackPatternFilters,
-  buildCatalogSnapshot,
+  nonViewSentence,
+  REFERENCE_VOCABULARIES,
   resolveVocabulary,
   searchAttackPatterns,
   searchWeaknesses,
+  someTokenMatches,
+  type VocabularyKey,
   type WeaknessFilters,
-  weaknessesInView,
 } from './catalog/catalog-index.js';
 export {
-  CatalogService,
-  type CatalogServiceOptions,
   disposeCatalogService,
   getCatalogService,
   initCatalogService,
-  REFRESH_INTERVALS,
-  systemCatalogClock,
 } from './catalog/catalog-service.js';
 export {
   disposeHierarchyService,
   getHierarchyService,
   HIERARCHY_RECOVERY,
-  type HierarchyInput,
-  type HierarchyResult,
-  HierarchyService,
-  type HierarchyServiceOptions,
   initHierarchyService,
-  normalizeHierarchy,
 } from './catalog/hierarchy-service.js';
+export { escapeMarkdown, Mark, PROSE_FIELDS } from './catalog/markdown-escape.js';
 export * from './catalog/types.js';
-export {
-  type OrderedNode,
-  orderedContentToMarkdown,
-  parseCapecCatalog,
-  parseCweCatalog,
-} from './catalog/xml-normalization.js';
+export { compileViewFilter } from './catalog/view-filter.js';
+export { collapse } from './catalog/xml-normalization.js';

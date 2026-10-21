@@ -3,6 +3,7 @@
  * @module tests/services/catalog/catalog-service.test
  */
 import { readFileSync } from 'node:fs';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { strToU8, zipSync } from 'fflate';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -86,6 +87,7 @@ function service(request: HttpRequest, clock = new Clock()) {
 afterEach(async () => {
   await disposeCatalogService();
   await Promise.all(owned.splice(0).map((instance) => instance.dispose()));
+  vi.unstubAllGlobals();
 });
 
 describe('CatalogService', () => {
@@ -282,6 +284,43 @@ describe('CatalogService', () => {
     await catalog.refresh();
     expect(catalog.snapshot().health.cwe.lastRefreshError).toBeUndefined();
     expect(catalog.snapshot().health.cwe.lastSuccessfulCheckAt).toBe(iso(clock.time));
+  });
+
+  it('reports MITRE edge refusals through the production adapter as temporary at startup and refresh', async () => {
+    let refuse = true;
+    const fetch = vi.fn(async (url: string) => {
+      if (refuse) return new Response('{"supportID": "1"}', { status: 403 });
+      if (url === SOURCE_URLS.cwe) return cweResponse();
+      if (url === SOURCE_URLS.capec) return capecResponse();
+      return Response.json({ ContentVersion: '4.test', ContentDate: 'api-date' });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const clock = new Clock();
+    const blocked = new CatalogService({ clock, context: createMockContext() });
+    owned.push(blocked);
+    await expect(blocked.start()).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      data: { status: 403, retryable: true },
+    });
+    const startUrls = fetch.mock.calls.map(([url]) => url);
+    expect(new Set(startUrls).size).toBe(startUrls.length);
+    refuse = false;
+    const onRefreshError = vi.fn();
+    const catalog = new CatalogService({ clock, context: createMockContext(), onRefreshError });
+    owned.push(catalog);
+    await catalog.start();
+    refuse = true;
+    fetch.mockClear();
+    clock.time += REFRESH_INTERVALS.cwe;
+    await catalog.refresh();
+    expect(catalog.snapshot().health.cwe.lastRefreshError).toMatchObject({
+      code: JsonRpcErrorCode.ServiceUnavailable,
+    });
+    expect(onRefreshError).toHaveBeenCalledWith(
+      'cwe',
+      expect.objectContaining({ code: JsonRpcErrorCode.ServiceUnavailable }),
+    );
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([SOURCE_URLS.cweVersion]);
   });
 
   it('coalesces parallel refresh calls and cancels pending owned requests at teardown', async () => {

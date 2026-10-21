@@ -49,6 +49,27 @@ export interface Member {
   viewId: string;
 }
 
+/** Another name MITRE records for an entry: plain source text and optional CommonMark explanation. */
+export interface AlternateTerm {
+  description?: string;
+  term: string;
+}
+
+/**
+ * A note MITRE records on a CWE or CAPEC entry: its source type label (an open string such as
+ * Relationship, Maintenance, or Terminology) and its CommonMark text.
+ */
+export interface CatalogNote {
+  text: string;
+  type: string;
+}
+
+/** Whether a weakness is a root cause or a consequence: the source value and its optional reason. */
+export interface WeaknessOrdinality {
+  description?: string;
+  ordinality: string;
+}
+
 /** Source consequence vocabulary and narrative. */
 export interface Consequence {
   impacts: readonly string[];
@@ -60,6 +81,10 @@ export interface Consequence {
 /** A CWE weakness or category with sparse, complete normalized sections. */
 export interface Weakness {
   abstraction?: string;
+  affectedResources?: readonly string[];
+  alternateTerms?: readonly AlternateTerm[];
+  /** CommonMark explanations of the underlying mechanism, in source order. */
+  backgroundDetails?: readonly string[];
   consequences?: readonly Consequence[];
   description: string;
   detectionMethods?: readonly {
@@ -70,6 +95,7 @@ export interface Weakness {
   }[];
   examples?: readonly DemonstrativeExample[];
   extendedDescription?: string;
+  functionalAreas?: readonly string[];
   id: string;
   likelihoodOfExploit?: string;
   mappingNotes?: {
@@ -88,7 +114,9 @@ export interface Weakness {
   }[];
   modesOfIntroduction?: readonly { phase: string; note?: string }[];
   name: string;
+  notes?: readonly CatalogNote[];
   observedExamples?: readonly { reference?: string; description?: string; link?: string }[];
+  ordinalities?: readonly WeaknessOrdinality[];
   platforms?: readonly {
     kind: 'language' | 'technology' | 'OS' | 'architecture';
     name?: string;
@@ -97,9 +125,18 @@ export interface Weakness {
   }[];
   references?: readonly CatalogReference[];
   relatedAttackPatterns?: readonly { id: string; name?: string }[];
-  relatedWeaknesses?: readonly { nature: string; id: string; viewId: string; ordinal?: string }[];
+  /** `name` is the loaded target's name, attached at indexing and absent when it is not loaded. */
+  relatedWeaknesses?: readonly {
+    nature: string;
+    id: string;
+    viewId: string;
+    ordinal?: string;
+    name?: string;
+  }[];
   sourceUrl: string;
   status: string;
+  /** Source `Structure` attribute (Simple, Composite, Chain); indexed for view filters, never returned. */
+  structure?: string;
   taxonomyMappings?: readonly TaxonomyMapping[];
   type: 'weakness' | 'category';
 }
@@ -107,10 +144,12 @@ export interface Weakness {
 /** A CWE view and its direct, source-ordered members. */
 export interface CatalogView {
   audience?: readonly { type?: string; description?: string }[];
+  /** The source XPath `Filter` of a filter-defined (Implicit) view, exactly as published. */
   filterDefinition?: string;
   id: string;
   members: readonly Member[];
   name: string;
+  notes?: readonly CatalogNote[];
   objective?: string;
   sourceUrl: string;
   status: string;
@@ -120,6 +159,7 @@ export interface CatalogView {
 /** A CAPEC attack pattern with source-provided mechanics and mappings. */
 export interface AttackPattern {
   abstraction: string;
+  alternateTerms?: readonly AlternateTerm[];
   attackTechniqueIds?: readonly string[];
   consequences?: readonly Consequence[];
   description: string;
@@ -137,6 +177,7 @@ export interface AttackPattern {
   likelihoodOfAttack?: string;
   mitigations?: readonly string[];
   name: string;
+  notes?: readonly CatalogNote[];
   prerequisites?: readonly string[];
   references?: readonly CatalogReference[];
   relatedAttackPatterns?: readonly { nature: string; id: string; name?: string }[];
@@ -146,8 +187,43 @@ export interface AttackPattern {
   sourceUrl: string;
   status: string;
   taxonomyMappings?: readonly TaxonomyMapping[];
+  type: 'attack_pattern';
   typicalSeverity?: string;
 }
+
+/**
+ * A direct member of a CAPEC category or view, in source order. Name, type, status, and a
+ * pattern's abstraction are attached at indexing and absent when the member is not loaded.
+ */
+export interface CapecMember {
+  abstraction?: string;
+  id: string;
+  name?: string;
+  status?: string;
+  type?: CapecRecord['type'];
+}
+
+/**
+ * A CAPEC category or view: an organizational record that groups patterns and categories. Its
+ * description is the category `Summary` or view `Objective`; a filter-defined (Implicit) view has
+ * a raw XPath `filterDefinition` instead of members.
+ */
+export interface CapecGrouping {
+  description?: string;
+  filterDefinition?: string;
+  id: string;
+  members?: readonly CapecMember[];
+  name: string;
+  notes?: readonly CatalogNote[];
+  references?: readonly CatalogReference[];
+  sourceUrl: string;
+  status: string;
+  taxonomyMappings?: readonly TaxonomyMapping[];
+  type: 'category' | 'view';
+}
+
+/** Any CAPEC record a CAPEC ID names; IDs never repeat across the three families. */
+export type CapecRecord = AttackPattern | CapecGrouping;
 
 /** The root's authoritative version and publication date. */
 export interface CatalogMetadata {
@@ -155,8 +231,21 @@ export interface CatalogMetadata {
   version: string;
 }
 
+/**
+ * Plain-text projection of a record's searched text, built from the XML source during
+ * normalization: no Markdown syntax and no escapes. Search reads it; no response carries it.
+ */
+export interface SearchText {
+  /** Each recorded alternate term, present only when the record has any; descriptions are not searched. */
+  alternateTerms?: readonly string[];
+  description: string;
+  extendedDescription?: string;
+}
+
 /** Parsed CWE data before cross-catalog indexing. */
 export interface CweCatalog extends CatalogMetadata {
+  /** Keyed by weakness or category ID. */
+  searchText: ReadonlyMap<string, SearchText>;
   views: ReadonlyMap<string, CatalogView>;
   weaknesses: ReadonlyMap<string, Weakness>;
 }
@@ -164,6 +253,10 @@ export interface CweCatalog extends CatalogMetadata {
 /** Parsed CAPEC data before cross-catalog indexing. */
 export interface CapecCatalog extends CatalogMetadata {
   attackPatterns: ReadonlyMap<string, AttackPattern>;
+  categories: ReadonlyMap<string, CapecGrouping>;
+  /** Keyed by attack pattern ID; CAPEC search reads the description and alternate terms. */
+  searchText: ReadonlyMap<string, SearchText>;
+  views: ReadonlyMap<string, CapecGrouping>;
 }
 
 /** Source and refresh health, disclosed by the versions reference topic. */

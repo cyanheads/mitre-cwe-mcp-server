@@ -17,5 +17,13 @@
     </Attack_Pattern>
     <Attack_Pattern ID="2" Name="Sparse pattern" Status="Deprecated" Abstraction="Meta"><Description>Only identity and description.</Description></Attack_Pattern>
   </Attack_Patterns>
+  <Categories>
+    <Category ID="118" Name="Collect and Analyze Information" Status="Stable"><Summary>Patterns that focus on <xhtml:b>gathering</xhtml:b> information.</Summary><Relationships><Has_Member CAPEC_ID="2"/><Has_Member CAPEC_ID="001"/></Relationships><Taxonomy_Mappings><Taxonomy_Mapping Taxonomy_Name="WASC"><Entry_ID>13</Entry_ID><Entry_Name>Information Leakage</Entry_Name></Taxonomy_Mapping></Taxonomy_Mappings><References><Reference External_Reference_ID="CAP-REF" Section="2"/></References><Notes><Note Type="Maintenance">Category <xhtml:i>note</xhtml:i>.</Note></Notes></Category>
+    <Category ID="119" Name="DEPRECATED: Deplete Resources" Status="Deprecated"><Summary>No longer used by any view.</Summary></Category>
+  </Categories>
+  <Views>
+    <View ID="1000" Name="Mechanisms of Attack" Type="Graph" Status="Stable"><Objective>Organizes patterns by the mechanism they employ.</Objective><Members><Has_Member CAPEC_ID="118"/><Has_Member CAPEC_ID="119"/><Has_Member CAPEC_ID="404"/></Members></View>
+    <View ID="282" Name="Meta Abstractions" Type="Implicit" Status="Draft"><Objective>Meta abstraction attack patterns.</Objective><Filter>/Attack_Pattern_Catalog/Attack_Patterns/Attack_Pattern[@Abstraction='Meta']</Filter><References><Reference External_Reference_ID="CAP-REF"/></References><Notes><Note Type="Other">View note.</Note></Notes></View>
+  </Views>
   <External_References><External_Reference Reference_ID="CAP-REF"><Title>Attack reference</Title></External_Reference></External_References>
 </Attack_Pattern_Catalog>

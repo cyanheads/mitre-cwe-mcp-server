@@ -4,30 +4,35 @@
  */
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getCatalogService } from '@/services/index.js';
+import { compileViewFilter, getCatalogService } from '@/services/index.js';
+import { notesSchema } from '../catalog-schemas.js';
 import {
-  type CatalogPage,
+  CWE_ID,
   catalogEnrichmentTrailer,
-  deliveredSize,
   formatCatalog,
   list,
   normalizeId,
-  pageEnrichment,
-  pageItems,
+  pageResponse,
   paginationSchema,
   pagingShape,
   provenanceSchema,
   text,
+  VIEW_ID_FORMS,
 } from '../shared.js';
 
 /** Read one view without expanding its direct membership into descendants. */
 export const cweGetView = tool('cwe_get_view', {
   title: 'Get CWE view',
   description:
-    'Read a CWE view objective, audience, status, source filter, and direct members in published order. Navigation views list top-level members rather than every descendant; use cwe_get_hierarchy for navigation or cwe_search_weaknesses with viewId for weakness membership closure. Unknown and non-view IDs return a structured miss. Follow nextCursor for remaining direct members.',
+    'Read a CWE view objective, audience, status, source filter, recorded notes, and direct members in published order. Navigation views list top-level members rather than every descendant; use cwe_get_hierarchy for navigation or cwe_search_weaknesses with viewId for weakness membership closure. A filter-defined (Implicit) view lists no members: its filterDefinition is the source XPath that defines membership, and cwe_search_weaknesses with its viewId returns the weaknesses that filter selects; when the filter has a part this server does not evaluate, the guidance says so and that search returns none with a disclosure. Unknown and non-view IDs return a structured miss. Follow nextCursor for remaining direct members.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    id: text('CWE view ID or positive bare integer; discover with cwe_list_reference topic views.'),
+    id: z
+      .string()
+      .regex(CWE_ID, VIEW_ID_FORMS)
+      .describe(
+        'CWE view ID such as CWE-1000 or 1000; discover with cwe_list_reference topic views.',
+      ),
     ...pagingShape,
   }),
   output: z.object({
@@ -40,18 +45,21 @@ export const cweGetView = tool('cwe_get_view', {
     name: text('Source view name.').optional(),
     type: text('Source view type.').optional(),
     status: text('Source status.').optional(),
-    objective: text('Complete source objective.').optional(),
+    objective: text('Complete source objective in CommonMark.').optional(),
     sourceUrl: text('Official view definition URL.').optional(),
     audience: list(
       z
         .object({
           type: text('Source stakeholder type.').optional(),
-          description: text('Source audience description.').optional(),
+          description: text('Source audience description in CommonMark.').optional(),
         })
         .describe('Source stakeholder.'),
       'Source audience.',
     ).optional(),
-    filterDefinition: text('Complete source member filter definition.').optional(),
+    filterDefinition: text(
+      'Source XPath filter defining a filter-defined view’s membership, exactly as published.',
+    ).optional(),
+    notes: notesSchema.optional(),
     members: list(
       z
         .object({
@@ -97,51 +105,51 @@ export const cweGetView = tool('cwe_get_view', {
   ],
   handler(input, ctx) {
     const snapshot = getCatalogService().snapshot();
-    const id = normalizeId(input.id, 'CWE');
+    const id = normalizeId(input.id);
     const view = snapshot.cwe.views.get(id);
-    const members = view?.members ?? [];
-    const output = (page: CatalogPage<(typeof members)[number]>) => {
-      const common = {
-        id,
-        members: page.items.map((member) => ({ ...member })),
-        pagination: page.pagination,
-        provenance: snapshot.provenance,
-      };
-      if (!view)
-        return {
-          ...common,
-          found: false,
-          reason: snapshot.cwe.weaknesses.has(id)
-            ? ('wrong_type' as const)
-            : ('not_found' as const),
-          guidance:
-            'Call cwe_list_reference with topic views to find a view ID, then repeat cwe_get_view.',
+    const { output, enrichment } = pageResponse(view?.members ?? [], input, {
+      binding: ['cwe_get_view', id],
+      provenance: snapshot.provenance,
+      appliedFilters: { id },
+      output: (page) => {
+        const common = {
+          id,
+          members: page.items.map((member) => ({ ...member })),
+          pagination: page.pagination,
+          provenance: snapshot.provenance,
         };
-      const { members: _members, audience, ...metadata } = view;
-      return {
-        ...metadata,
-        ...common,
-        found: true,
-        ...(audience !== undefined ? { audience: audience.map((item) => ({ ...item })) } : {}),
-        ...(view.members.length === 0
-          ? {
-              guidance:
-                'This view has no recorded direct members; this does not establish that no weaknesses belong to it. Review filterDefinition when present, or use cwe_get_hierarchy for navigation.',
-            }
-          : {}),
-      };
-    };
-    const enrichment = (page: CatalogPage<(typeof members)[number]>) =>
-      pageEnrichment(page, input.limit, { id, limit: Math.min(input.limit, 100) });
-    const page = pageItems(
-      members,
-      input,
-      ['cwe_get_view', id, Math.min(input.limit, 100)],
-      snapshot.provenance,
-      (candidate) => deliveredSize(output(candidate), enrichment(candidate)),
-    );
-    ctx.enrich(enrichment(page));
-    return output(page);
+        if (!view)
+          return {
+            ...common,
+            found: false,
+            reason: snapshot.cwe.weaknesses.has(id)
+              ? ('wrong_type' as const)
+              : ('not_found' as const),
+            guidance:
+              'Call cwe_list_reference with topic views to find a view ID, then repeat cwe_get_view.',
+          };
+        const { members: _members, audience, notes, ...metadata } = view;
+        return {
+          ...metadata,
+          ...common,
+          found: true,
+          ...(audience !== undefined ? { audience: audience.map((item) => ({ ...item })) } : {}),
+          ...(notes !== undefined ? { notes: notes.map((note) => ({ ...note })) } : {}),
+          ...(view.members.length === 0
+            ? {
+                guidance:
+                  view.filterDefinition === undefined
+                    ? 'This view has no recorded direct members; this does not establish that no weaknesses belong to it. Use cwe_get_hierarchy for navigation.'
+                    : compileViewFilter(view.filterDefinition)
+                      ? `This view has no recorded members: its source filter (filterDefinition) defines its membership. Call cwe_search_weaknesses with viewId ${id} for the weaknesses it selects.`
+                      : `This view has no recorded members: its source filter (filterDefinition) defines its membership, but the filter has a part this server does not evaluate, so cwe_search_weaknesses with viewId ${id} returns no weaknesses and says so. Read filterDefinition for the records it selects.`,
+              }
+            : {}),
+        };
+      },
+    });
+    ctx.enrich(enrichment);
+    return output;
   },
   format: formatCatalog,
 });
