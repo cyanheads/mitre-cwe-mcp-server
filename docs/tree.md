@@ -1,6 +1,6 @@
 # mitre-cwe-mcp-server - Directory Structure
 
-Generated on: 2026-10-21 09:55:06
+Generated on: 2026-10-23 04:13:43
 
 ```text
 mitre-cwe-mcp-server/
@@ -134,6 +134,8 @@ mitre-cwe-mcp-server/
 │   ├── release-github.ts
 │   └── tree.ts
 ├── src/
+│   ├── config/
+│   │   └── server-config.ts
 │   ├── mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
@@ -150,6 +152,7 @@ mitre-cwe-mcp-server/
 │   ├── services/
 │   │   ├── catalog/
 │   │   │   ├── acquisition.ts
+│   │   │   ├── catalog-cache.ts
 │   │   │   ├── catalog-index.ts
 │   │   │   ├── catalog-service.ts
 │   │   │   ├── hierarchy-service.ts
@@ -160,6 +163,8 @@ mitre-cwe-mcp-server/
 │   │   └── index.ts
 │   └── index.ts
 ├── tests/
+│   ├── config/
+│   │   └── server-config.test.ts
 │   ├── fixtures/
 │   │   ├── catalog/
 │   │   │   ├── capec-normalization.xml
