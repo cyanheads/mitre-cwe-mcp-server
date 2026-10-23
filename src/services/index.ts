@@ -6,12 +6,17 @@
 export { SOURCE_URLS } from './catalog/acquisition.js';
 export {
   type AttackPatternFilters,
+  categoryOnlyStatuses,
+  evidenceMatchers,
   nonViewSentence,
   REFERENCE_VOCABULARIES,
+  recordedEntryId,
   resolveVocabulary,
+  resolveWeaknessStatus,
   searchAttackPatterns,
   searchWeaknesses,
   someTokenMatches,
+  tokenMatcher,
   type VocabularyKey,
   type WeaknessFilters,
 } from './catalog/catalog-index.js';

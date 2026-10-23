@@ -35,7 +35,8 @@ export const notesSchema = list(
     .describe('Recorded MITRE note.'),
   'Notes MITRE records for this entry, in source order; absent when none are recorded.',
 );
-const mapping = z
+/** Shared by detail mappings and the mappings a weakness search matched. */
+export const taxonomyMappingSchema = z
   .object({
     taxonomy: text('Taxonomy name.'),
     id: text('Recorded entry ID.').optional(),
@@ -43,6 +44,14 @@ const mapping = z
     fit: text('Source mapping fit.').optional(),
   })
   .describe('Recorded taxonomy crosswalk.');
+/** Shared by detail observed examples and the examples a weakness search matched. */
+export const observedExampleSchema = z
+  .object({
+    reference: text('Observed example reference.').optional(),
+    description: text('Observed example description in CommonMark.').optional(),
+    link: text('Observed example URL.').optional(),
+  })
+  .describe('Observed example.');
 const reference = z
   .object({
     id: text('External reference identifier.'),
@@ -92,7 +101,7 @@ const identity = {
   kind: z
     .enum(['full', 'partial', 'outline'])
     .describe(
-      'full: every selected section the entry has, complete. partial: default sections that fit the 24,000-byte response budget, complete, with the omitted ones in outline. outline: identity and section sizes only.',
+      'full: every selected section the entry has, complete. partial: the sections of a default selection that fit the 24,000-byte response budget, complete, with the omitted ones in outline. outline: identity and section sizes only.',
     ),
   requestedSections: strings('Sections selected for this response.'),
   availableSections: strings('Sections actually present in the catalog entry.'),
@@ -186,7 +195,9 @@ export const weaknessEntrySchema = z
                 z
                   .object({
                     kind: z.literal('code').describe('Code block.'),
-                    text: text('Complete code with original whitespace.'),
+                    text: text(
+                      'Complete code laid out as MITRE displays it: one line per displayed line, each indentation level as 4 spaces.',
+                    ),
                     language: text('Source code language.').optional(),
                     nature: text(
                       'Open source code nature such as Bad, Good, or Attack.',
@@ -197,6 +208,10 @@ export const weaknessEntrySchema = z
               .describe('Ordered source prose or code block.'),
             'All ordered blocks belonging to this example.',
           ),
+          references: list(
+            reference,
+            'Resolved external references this example cites; absent when it cites none.',
+          ).optional(),
         })
         .describe('Complete demonstrative example.'),
       'Selected complete examples.',
@@ -222,16 +237,7 @@ export const weaknessEntrySchema = z
         .describe('Detection method.'),
       'Recorded detection methods.',
     ).optional(),
-    observedExamples: list(
-      z
-        .object({
-          reference: text('Observed example reference.').optional(),
-          description: text('Observed example description in CommonMark.').optional(),
-          link: text('Observed example URL.').optional(),
-        })
-        .describe('Observed example.'),
-      'Recorded observed examples.',
-    ).optional(),
+    observedExamples: list(observedExampleSchema, 'Recorded observed examples.').optional(),
     platforms: list(
       z
         .object({
@@ -249,7 +255,7 @@ export const weaknessEntrySchema = z
     affectedResources: strings(
       'System resources the weakness affects, such as Memory or File or Directory.',
     ).optional(),
-    taxonomyMappings: list(mapping, 'Recorded taxonomy crosswalks.').optional(),
+    taxonomyMappings: list(taxonomyMappingSchema, 'Recorded taxonomy crosswalks.').optional(),
     references: list(reference, 'Resolved external references.').optional(),
     notes: notesSchema.optional(),
   })
@@ -326,7 +332,7 @@ export const attackPatternEntrySchema = z
       'Recorded CWE mappings.',
     ).optional(),
     attackTechniqueIds: strings('Recorded ATT&CK IDs; not a current validation.').optional(),
-    taxonomyMappings: list(mapping, 'All recorded taxonomy mappings.').optional(),
+    taxonomyMappings: list(taxonomyMappingSchema, 'All recorded taxonomy mappings.').optional(),
     references: list(reference, 'Resolved external references.').optional(),
     notes: notesSchema.optional(),
   })
@@ -352,7 +358,9 @@ export function batchOutput<T extends z.ZodType>(entry: T) {
     deferredIds: strings(
       'Distinct items to submit in a later call: canonical IDs, or the collapsed text of an item that is no ID.',
     ),
-    guidance: text('Batch continuation guidance.').optional(),
+    guidance: text(
+      'Call-level guidance: deferred-ID continuation, budget disclosure, and the re-call for parameters the selected sections leave unused.',
+    ).optional(),
     provenance: provenanceSchema,
   });
 }

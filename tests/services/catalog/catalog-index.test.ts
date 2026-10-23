@@ -6,10 +6,14 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   buildCatalogSnapshot,
+  evidenceMatchers,
+  recordedEntryId,
   resolveVocabulary,
+  resolveWeaknessStatus,
   searchAttackPatterns,
   searchWeaknesses,
   someTokenMatches,
+  tokenMatcher,
   weaknessesInView,
 } from '@/services/catalog/catalog-index.js';
 import type {
@@ -22,6 +26,7 @@ import type {
   Weakness,
 } from '@/services/catalog/types.js';
 import { parseCapecCatalog, parseCweCatalog } from '@/services/catalog/xml-normalization.js';
+import { expectLinearTime } from '../../helpers/cpu-timing.js';
 
 const weakness = (id: number, fields: Partial<Weakness> = {}): Weakness => ({
   id: `CWE-${id}`,
@@ -54,6 +59,7 @@ const health: CatalogHealth = {
   counts: {},
   loadedAt: '2026-10-20T00:00:00Z',
   nextCheckAt: '2026-10-21T00:00:00Z',
+  source: 'upstream',
   sourceUrl: 'https://example.test',
 };
 /** A view with no recorded members unless given; `filterDefinition` makes it filter-defined. */
@@ -206,6 +212,82 @@ describe('catalog indexes', () => {
       expect(someTokenMatches(data, catalog, filter, includeInactive), `${catalog} ${filter}`).toBe(
         expected,
       );
+  });
+
+  it('matches a token only at a word start, in every tier and in the fewer-terms check', () => {
+    const data = snapshot(
+      [
+        weakness(1, { name: 'Resource Leak', description: 'An rce here.' }),
+        weakness(2, { name: 'RCE' }),
+        weakness(3, { description: 'Force and resources.' }),
+        weakness(4, { name: 'Trace', description: 'A brace, then a race.' }),
+        weakness(5, { name: 'Unbounded ReDoS', alternateTerms: [{ term: 'Regex_DoS' }] }),
+      ],
+      [
+        pattern(94, { name: 'Adversary in the Middle', alternateTerms: [{ term: 'MITM' }] }),
+        pattern(422, { name: 'Influence Perception of Commitment' }),
+        pattern(3, { description: 'Uncommitted.', status: 'Deprecated' }),
+      ],
+    );
+    const ids = (filter: string) => searchWeaknesses(data, { filter }).map((entry) => entry.id);
+    // Inside-word occurrences neither match nor lift a record into the name tier.
+    expect(ids('rce')).toEqual(['CWE-2', 'CWE-1']);
+    expect(ids('race')).toEqual(['CWE-4']);
+    expect(ids('dos')).toEqual(['CWE-5']);
+    expect(searchAttackPatterns(data, { filter: 'mitm' }).map((entry) => entry.id)).toEqual([
+      'CAPEC-94',
+    ]);
+    expect(
+      searchAttackPatterns(data, { filter: 'commit', includeInactive: true }).map(
+        (entry) => entry.id,
+      ),
+    ).toEqual(['CAPEC-422']);
+    for (const [catalog, filter, includeInactive, expected] of [
+      ['cwe', 'zzqx source', false, false],
+      ['cwe', 'zzqx resource', false, true],
+      ['cwe', 'zzqx DOS', false, true],
+      ['capec', 'zzqx itm', false, false],
+      ['capec', 'zzqx mitted', true, false],
+      ['capec', 'zzqx uncommitted', true, true],
+    ] as const)
+      expect(someTokenMatches(data, catalog, filter, includeInactive), `${catalog} ${filter}`).toBe(
+        expected,
+      );
+  });
+
+  it('builds the status vocabulary from weaknesses and accepts a category-only status that matches none', () => {
+    const data = snapshot([
+      weakness(1, { status: 'Stable' }),
+      weakness(2, { status: 'Draft' }),
+      weakness(900, { type: 'category', status: 'Obsolete' }),
+      weakness(901, { type: 'category', status: 'Draft' }),
+    ]);
+    expect(data.vocabulary.get('cweStatuses')).toEqual(['Draft', 'Stable']);
+    expect(resolveWeaknessStatus(data, ' OBSOLETE ')).toBe('Obsolete');
+    expect(resolveWeaknessStatus(data, 'draft')).toBe('Draft');
+    expect(searchWeaknesses(data, { status: 'obsolete' })).toEqual([]);
+    expect(searchWeaknesses(data, { status: 'draft' }).map((entry) => entry.id)).toEqual(['CWE-2']);
+    expect(() => searchWeaknesses(data, { status: 'Foo' })).toThrow(
+      expect.objectContaining({
+        message: 'Unknown status "Foo"; supported values: Draft, Stable.',
+        data: {
+          reason: 'unknown_filter',
+          retryable: false,
+          field: 'status',
+          value: 'Foo',
+          supported: ['Draft', 'Stable'],
+        },
+      }),
+    );
+    // A weakness that carries the status lists it and matches it like any other.
+    const carried = snapshot([
+      weakness(1, { status: 'Obsolete' }),
+      weakness(900, { type: 'category', status: 'Obsolete' }),
+    ]);
+    expect(carried.vocabulary.get('cweStatuses')).toEqual(['Obsolete']);
+    expect(searchWeaknesses(carried, { status: 'OBSOLETE' }).map((entry) => entry.id)).toEqual([
+      'CWE-1',
+    ]);
   });
 
   it('collects actual vocabulary and resolves exact case-insensitive filters without fuzzy broadening', () => {
@@ -383,6 +465,128 @@ describe('catalog indexes', () => {
       );
   });
 
+  it('finds weaknesses by a recorded taxonomy mapping or observed-example CVE with exact semantics', () => {
+    const cert = (id: string, fit?: string) => ({
+      taxonomy: 'CERT C Secure Coding',
+      id,
+      ...(fit ? { fit } : {}),
+    });
+    const cve = (reference: string, description = 'Observed.') => ({ reference, description });
+    const data = snapshot([
+      weakness(119, {
+        taxonomyMappings: [cert('ARR30-C', 'CWE More Abstract'), cert('ARR38-C')],
+        observedExamples: [cve('CVE-2021-44228'), cve('[REF-1374]')],
+      }),
+      weakness(79, {
+        taxonomyMappings: [
+          { taxonomy: 'OWASP Top Ten 2007', id: 'A1', fit: 'Exact' },
+          { taxonomy: 'OWASP Top Ten 2004', id: 'A1' },
+        ],
+      }),
+      weakness(20, { taxonomyMappings: [{ taxonomy: 'OWASP Top Ten 2004', id: 'A1' }] }),
+      weakness(1391, {
+        taxonomyMappings: [
+          { taxonomy: 'ISA/IEC 62443', id: 'Part 4-2', name: 'Req CR 1.1' },
+          { taxonomy: 'ISA/IEC 62443', id: 'Part 3-3' },
+          { taxonomy: 'ISA/IEC 62443', id: 'Part 4-2', name: 'Req CR 2.1' },
+        ],
+        observedExamples: [cve('CVE-2021-44228', 'First.'), cve('CVE-2021-44228', 'Second.')],
+      }),
+      weakness(5, { taxonomyMappings: [{ taxonomy: '7 Pernicious Kingdoms', name: 'J2EE' }] }),
+      weakness(6),
+      weakness(900, {
+        type: 'category',
+        taxonomyMappings: [{ taxonomy: 'Category Taxonomy', id: 'ARR30-C' }, cert('ARR00-C')],
+        observedExamples: [cve('CVE-2000-0001')],
+      }),
+    ]);
+    // Names come from weakness records only, sorted like every other vocabulary.
+    expect(data.vocabulary.get('cweTaxonomyNames')).toEqual([
+      '7 Pernicious Kingdoms',
+      'CERT C Secure Coding',
+      'ISA/IEC 62443',
+      'OWASP Top Ten 2004',
+      'OWASP Top Ten 2007',
+    ]);
+    const ids = (filters: Parameters<typeof searchWeaknesses>[1]) =>
+      searchWeaknesses(data, filters).map((entry) => entry.id);
+    // Entry_ID: case and whitespace runs ignored, whole ID only, any taxonomy.
+    expect(ids({ taxonomyEntryId: ' arr30-c ' })).toEqual(['CWE-119']);
+    expect(ids({ taxonomyEntryId: 'ARR30' })).toEqual([]);
+    expect(ids({ taxonomyEntryId: 'ARR00-C' })).toEqual([]);
+    expect(ids({ taxonomyEntryId: 'a1' })).toEqual(['CWE-20', 'CWE-79']);
+    expect(ids({ taxonomyEntryId: 'part \t 4-2' })).toEqual(['CWE-1391']);
+    expect(ids({ taxonomyEntryId: 'part4-2' })).toEqual([]);
+    // Name and ID hold on one mapping, never one mapping each.
+    expect(ids({ taxonomyEntryId: 'A1', taxonomyName: 'owasp top ten 2007' })).toEqual(['CWE-79']);
+    expect(ids({ taxonomyEntryId: 'ARR38-C', taxonomyName: 'OWASP Top Ten 2004' })).toEqual([]);
+    // A name alone matches mappings without an Entry_ID.
+    expect(ids({ taxonomyName: '7 PERNICIOUS KINGDOMS' })).toEqual(['CWE-5']);
+    // CVE: trimmed and uppercased, matched exactly against the recorded reference.
+    expect(ids({ observedCveId: ' cve-2021-44228 ' })).toEqual(['CWE-119', 'CWE-1391']);
+    expect(ids({ observedCveId: 'CVE-2021-4422' })).toEqual([]);
+    expect(ids({ observedCveId: 'CVE-2000-0001' })).toEqual([]);
+    // Combined by AND with each other and the other filters; ordering stays numeric.
+    expect(ids({ observedCveId: 'CVE-2021-44228', taxonomyEntryId: 'part 4-2' })).toEqual([
+      'CWE-1391',
+    ]);
+    expect(ids({ observedCveId: 'CVE-2021-44228', filter: 'absent' })).toEqual([]);
+    // Blank is unset.
+    expect(ids({ taxonomyEntryId: ' ', observedCveId: ' ', taxonomyName: ' ' })).toHaveLength(6);
+
+    // Every matching entry, in source order, duplicates included.
+    const matched = (filters: Parameters<typeof searchWeaknesses>[1]) => {
+      const { mapping, example } = evidenceMatchers(data, filters);
+      const entry = data.cwe.weaknesses.get('CWE-1391') as Weakness;
+      return {
+        mappings: mapping && entry.taxonomyMappings?.filter(mapping),
+        examples: example && entry.observedExamples?.filter(example),
+      };
+    };
+    expect(matched({ taxonomyEntryId: 'PART 4-2', observedCveId: 'cve-2021-44228' })).toEqual({
+      mappings: [
+        { taxonomy: 'ISA/IEC 62443', id: 'Part 4-2', name: 'Req CR 1.1' },
+        { taxonomy: 'ISA/IEC 62443', id: 'Part 4-2', name: 'Req CR 2.1' },
+      ],
+      examples: [cve('CVE-2021-44228', 'First.'), cve('CVE-2021-44228', 'Second.')],
+    });
+    expect(matched({ taxonomyName: 'ISA/IEC 62443' }).mappings).toHaveLength(3);
+    expect(matched({ status: 'Draft' })).toEqual({ mappings: undefined, examples: undefined });
+
+    // The echo is the spelling a weakness records, or the collapsed value when none does.
+    expect(recordedEntryId(data, ' arr30-c ')).toBe('ARR30-C');
+    expect(recordedEntryId(data, 'part  4-2')).toBe('Part 4-2');
+    expect(recordedEntryId(data, ' arr00-c ')).toBe('arr00-c');
+    expect(recordedEntryId(data, 'no  such\tid')).toBe('no such id');
+
+    // An unknown name lists a short vocabulary, a category's taxonomy included in no list.
+    for (const value of ['Category Taxonomy', 'CERT C', 'OWASP'])
+      expect(() => searchWeaknesses(data, { taxonomyName: value })).toThrow(
+        expect.objectContaining({
+          message: `Unknown taxonomyName "${value}"; supported values: 7 Pernicious Kingdoms, CERT C Secure Coding, ISA/IEC 62443, OWASP Top Ten 2004, OWASP Top Ten 2007.`,
+          data: expect.objectContaining({ reason: 'unknown_filter', field: 'taxonomyName', value }),
+        }),
+      );
+    // A longer vocabulary names the topic that lists it.
+    const many = snapshot([
+      weakness(1, {
+        taxonomyMappings: Array.from({ length: 11 }, (_, index) => ({ taxonomy: `T${index}` })),
+      }),
+    ]);
+    expect(() => searchWeaknesses(many, { taxonomyName: 'CERT C' })).toThrow(
+      expect.objectContaining({
+        message:
+          'Unknown taxonomyName "CERT C"; cwe_list_reference topic filter_values lists the supported values.',
+        data: {
+          reason: 'unknown_filter',
+          retryable: false,
+          field: 'taxonomyName',
+          value: 'CERT C',
+        },
+      }),
+    );
+  });
+
   it('follows nested membership and ChildOf cycles only within the requested view', () => {
     const data = snapshot([
       weakness(900, { type: 'category', members: [{ id: 'CWE-901', viewId: 'CWE-1000' }] }),
@@ -512,6 +716,75 @@ describe('catalog indexes', () => {
     ).toEqual(['CAPEC-10']);
     expect(searchAttackPatterns(data, { cweId: 'CWE-999' })).toEqual([]);
     expect(searchAttackPatterns(data, {}).map((entry) => entry.id)).toContain('CAPEC-6');
+  });
+});
+
+describe('tokenMatcher', () => {
+  it.each([
+    // A letter- or digit-led token matches at the start, after any other character, or at a hump.
+    ['RCE', 'rce', true],
+    ['Resource Force', 'rce', false],
+    ['Trace', 'race', false],
+    ['trace, brace; race', 'race', true],
+    ['Calls inet_addr().', 'addr', true],
+    ['Calls inet_addr().', 'inet_addr()', true],
+    ['Unbounded ReDoS', 'dos', true],
+    ['JavaScript', 'script', true],
+    ['javascript', 'script', false],
+    ['XPath', 'path', true],
+    ['NoSQL', 'sql', true],
+    ['HTTPServer', 'server', true],
+    ['OWASP', 'asp', false],
+    ['Deserialization', 'serialization', false],
+    ['Àxyz', 'xyz', false],
+    ['Π-calculus', 'calculus', true],
+    // A digit-ended token never matches before a digit.
+    ['RFC 793', '79', false],
+    ['RFC 793 or CWE-79.', '79', true],
+    ['79a', '79', true],
+    ['1000000 rows', '1000', false],
+    // The rest of the token matches literally; a punctuation-led token matches anywhere.
+    ['C++ and X.509', 'c++', true],
+    ['C++ and X.509', 'x.509', true],
+    ['ASP.NET', 'net', true],
+    ['ASP.NET', '.net', true],
+    ['Blocks "<script>" tags', '"<script>"', true],
+    ['speculation[REF-1400]', '[ref-1400]', true],
+    ['', 'x', false],
+  ])('in %j, %j matches: %s', (text, token, expected) => {
+    expect(tokenMatcher(text)(token)).toBe(expected);
+  });
+
+  it('reads the original case at a match after a character whose lowercase is longer', () => {
+    // U+0130 lowercases to two code units; each boundary after it is still read at its position.
+    expect(tokenMatcher('\u0130 ReDoss')('dos')).toBe(true);
+    expect(tokenMatcher('\u0130 redOs')('dos')).toBe(false);
+    // A token holding it, lowercased as a filter is, matches it in the text.
+    const istanbul = '\u0130stanbul'.toLowerCase();
+    expect(tokenMatcher('\u0130, \u0130stanbul')(istanbul)).toBe(true);
+    expect(tokenMatcher('\u0130stanbul')('stanbul')).toBe(false);
+  });
+
+  it('scans catalog-sized text in linear time', { timeout: 60_000 }, () => {
+    const repeat = (unit: string, length: number) => unit.repeat(Math.ceil(length / unit.length));
+    const shapes: [string, string, (length: number) => string][] = [
+      ['one word run', 'aaaa', (length) => `b${repeat('a', length)}`],
+      [
+        'maximum-length token in a word run',
+        'a'.repeat(500),
+        (length) => `b${repeat('a', length)}`,
+      ],
+      ['inside-word occurrences', 'rce', (length) => repeat('resource ', length)],
+      ['overlapping prefixes', 'aab', (length) => repeat('a', length)],
+      ['periodic token inside a word', 'abab', (length) => `x${repeat('ab', length)}`],
+      ['a digit after every word start', '12', (length) => repeat(' 123', length)],
+      ['a digit after every hump', 'y1', (length) => repeat('xY12', length)],
+      ['long digit run', '1', (length) => `x${repeat('1', length)}`],
+      ['one long line', 'y', (length) => `${repeat('§1 x', length)}\ny`],
+      ['breaks throughout', 'zz', (length) => repeat('  \r\n', length)],
+    ];
+    for (const [label, token, build] of shapes)
+      expectLinearTime(label, build, (text) => tokenMatcher(text)(token));
   });
 });
 

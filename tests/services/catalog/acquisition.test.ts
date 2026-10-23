@@ -14,6 +14,8 @@ import {
   BYTE_LIMITS,
   defaultHttpRequest,
   extractCweXml,
+  parseCapecBytes,
+  parseCweBytes,
   readBoundedBody,
   SOURCE_URLS,
 } from '@/services/catalog/acquisition.js';
@@ -188,6 +190,39 @@ describe('acquisition pipelines', () => {
       lastModified: 'Tue, 24 Jan 2023 00:00:00 GMT',
     });
     expect(request.mock.calls.map(([url]) => url)).toEqual([SOURCE_URLS.cwe, SOURCE_URLS.capec]);
+  });
+
+  it('returns the exact downloaded bytes, which parse to the same catalog from memory', async () => {
+    const cweBytes = archive();
+    const capecBytes = strToU8(capecXml);
+    const request = vi
+      .fn<HttpRequest>()
+      .mockResolvedValueOnce(new Response(cweBytes))
+      .mockResolvedValueOnce(new Response(capecBytes));
+    const cwe = await acquireCwe(request, context(), signal());
+    const capec = await acquireCapec(request, context(), signal());
+    if ('unchanged' in capec) throw new Error('Expected a CAPEC download');
+    expect(cwe.bytes).toEqual(cweBytes);
+    expect(capec.bytes).toEqual(capecBytes);
+    expect(parseCweBytes(cweBytes, signal())).toEqual(cwe.catalog);
+    expect(parseCapecBytes(capecBytes)).toEqual(capec.catalog);
+  });
+
+  it('applies the download checks to bytes from memory', () => {
+    expect(() => parseCweBytes(strToU8('<!DOCTYPE html><p>outage</p>'), signal())).toThrow(
+      expect.objectContaining({
+        data: expect.objectContaining({ reason: 'upstream_html', retryable: true }),
+      }),
+    );
+    expect(() => parseCweBytes(new Uint8Array(BYTE_LIMITS.cweDownload + 1), signal())).toThrow(
+      expect.objectContaining({ data: expect.objectContaining({ reason: 'response_too_large' }) }),
+    );
+    expect(() => parseCapecBytes(new Uint8Array(BYTE_LIMITS.capecXml + 1).fill(0x20))).toThrow(
+      expect.objectContaining({ data: expect.objectContaining({ reason: 'response_too_large' }) }),
+    );
+    expect(() => parseCapecBytes(new Uint8Array([0x3c, 0xff]))).toThrow(
+      expect.objectContaining({ data: expect.objectContaining({ reason: 'invalid_catalog' }) }),
+    );
   });
 
   it.each([{ etag: 'tag', lastModified: 'date' }, { lastModified: 'date' }])(

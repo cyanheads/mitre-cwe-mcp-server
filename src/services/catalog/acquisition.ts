@@ -314,9 +314,30 @@ export function extractCweXml(bytes: Uint8Array, signal: AbortSignal): string {
 
 /** Conditional response metadata belongs to the exact downloaded source. */
 export interface AcquiredCatalog<T> {
+  /** The exact response body the catalog was parsed from. */
+  bytes: Uint8Array;
   catalog: T;
   etag?: string;
   lastModified?: string;
+}
+
+/**
+ * Parse a CWE archive from a download or the cache. A MITRE error page served as the archive is
+ * reported as a retryable upstream failure rather than a malformed archive.
+ */
+export function parseCweBytes(bytes: Uint8Array, signal: AbortSignal): CweCatalog {
+  if (/^\s*<(?:!doctype\s+html|html[\s>])/i.test(new TextDecoder().decode(bytes.subarray(0, 256))))
+    throw serviceUnavailable('MITRE returned HTML instead of a CWE archive.', {
+      reason: 'upstream_html',
+      retryable: true,
+    });
+  return parseCweCatalog(extractCweXml(bytes, signal));
+}
+
+/** Parse a CAPEC XML document from a download or the cache. */
+export function parseCapecBytes(bytes: Uint8Array): CapecCatalog {
+  if (bytes.length > BYTE_LIMITS.capecXml) tooLarge();
+  return parseCapecCatalog(decodeXml(bytes));
 }
 
 /**
@@ -343,18 +364,10 @@ export function acquireCwe(
       const response = await ensureStatus(
         await request(SOURCE_URLS.cwe, { signal: attempt.signal }, attempt.remainingMs, context),
       );
-      const body = await readBoundedBody(response, BYTE_LIMITS.cweDownload, attempt.signal);
-      if (
-        /^\s*<(?:!doctype\s+html|html[\s>])/i.test(new TextDecoder().decode(body.subarray(0, 256)))
-      ) {
-        throw serviceUnavailable('MITRE returned HTML instead of a CWE archive.', {
-          reason: 'upstream_html',
-          retryable: true,
-        });
-      }
-      const catalog = parseCweCatalog(extractCweXml(body, attempt.signal));
+      const bytes = await readBoundedBody(response, BYTE_LIMITS.cweDownload, attempt.signal);
+      const catalog = parseCweBytes(bytes, attempt.signal);
       attempt.signal.throwIfAborted();
-      return { catalog, ...validators(response) };
+      return { bytes, catalog, ...validators(response) };
     },
     sourceRetry('acquireCwe', context, signal),
   );
@@ -394,10 +407,10 @@ export function acquireCapec(
           });
         return { unchanged: true, ...validators(response) };
       }
-      const body = await readBoundedBody(response, BYTE_LIMITS.capecXml, attempt.signal);
-      const catalog = parseCapecCatalog(decodeXml(body));
+      const bytes = await readBoundedBody(response, BYTE_LIMITS.capecXml, attempt.signal);
+      const catalog = parseCapecBytes(bytes);
       attempt.signal.throwIfAborted();
-      return { catalog, ...validators(response) };
+      return { bytes, catalog, ...validators(response) };
     },
     sourceRetry('acquireCapec', context, signal),
   );

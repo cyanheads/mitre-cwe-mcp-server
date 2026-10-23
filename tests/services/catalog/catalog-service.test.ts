@@ -2,12 +2,29 @@
  * @fileoverview Catalog publication, refresh health, scheduling and owned cancellation.
  * @module tests/services/catalog/catalog-service.test
  */
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { constants, readFileSync } from 'node:fs';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { logger } from '@cyanheads/mcp-ts-core/utils';
 import { strToU8, zipSync } from 'fflate';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SOURCE_URLS } from '@/services/catalog/acquisition.js';
+import { BYTE_LIMITS, SOURCE_URLS } from '@/services/catalog/acquisition.js';
+import { CatalogCache } from '@/services/catalog/catalog-cache.js';
 import {
   CatalogService,
   disposeCatalogService,
@@ -84,10 +101,22 @@ function service(request: HttpRequest, clock = new Clock()) {
   owned.push(instance);
   return instance;
 }
+const tempDirs: string[] = [];
+async function tempDir() {
+  const dir = await mkdtemp(join(tmpdir(), 'mitre-cwe-cache-test-'));
+  tempDirs.push(dir);
+  return dir;
+}
 afterEach(async () => {
   await disposeCatalogService();
   await Promise.all(owned.splice(0).map((instance) => instance.dispose()));
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+  for (const dir of tempDirs.splice(0)) {
+    await chmod(dir, 0o700).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 describe('CatalogService', () => {
@@ -399,5 +428,484 @@ describe('CatalogService', () => {
     });
     expect(request).toHaveBeenCalledTimes(3);
     expect(clock.active().map((job) => job.at)).toEqual([clock.time + REFRESH_INTERVALS.cwe]);
+  });
+});
+
+describe('CatalogService last-known-good cache', () => {
+  const CWE_FILE = 'cwec_latest.xml.zip';
+  const CAPEC_FILE = 'capec_latest.xml';
+  const minutes = (count: number) => count * 60 * 1000;
+  const cweLastModified = 'Thu, 30 Apr 2026 09:15:04 GMT';
+  const cweBytes = (version = '4.test') =>
+    zipSync({ 'cwe.xml': strToU8(cweXml.replace('4.test', version)) });
+  const capecBytes = (version = '3.test') => strToU8(capecXml.replace('3.test', version));
+  /** Serves fixed bytes, so a saved file can be compared byte for byte with what was served. */
+  function servingRequest(cwe = cweBytes(), capec = capecBytes(), apiVersion = '4.test') {
+    return vi.fn<HttpRequest>().mockImplementation(async (url) => {
+      if (url === SOURCE_URLS.cwe)
+        return new Response(cwe, { headers: { 'last-modified': cweLastModified } });
+      if (url === SOURCE_URLS.capec) return new Response(capec, { headers: { etag: 'capec-tag' } });
+      if (url === SOURCE_URLS.cweVersion)
+        return Response.json({ ContentVersion: apiVersion, ContentDate: 'api-date' });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+  }
+  const refusing = () =>
+    vi.fn<HttpRequest>().mockImplementation(async () => new Response(null, { status: 403 }));
+  function cached(request: HttpRequest, cacheDir: string, clock = new Clock()) {
+    const instance = new CatalogService({
+      request,
+      clock,
+      cacheDir,
+      context: createMockContext(),
+      onRefreshError: vi.fn(),
+    });
+    owned.push(instance);
+    return instance;
+  }
+  const sidecar = async (dir: string, file: string) =>
+    JSON.parse(await readFile(join(dir, `${file}.json`), 'utf8')) as unknown;
+  /** A previous process's successful start leaves both catalogs and sidecars behind. */
+  async function seededDir() {
+    const dir = await tempDir();
+    const first = cached(servingRequest(), dir);
+    await first.start();
+    await first.dispose();
+    return dir;
+  }
+  const urls = (request: ReturnType<typeof vi.fn<HttpRequest>>) =>
+    request.mock.calls.map(([url]) => url);
+  const SAVE_FAILED = 'Could not save the MITRE catalog to the cache directory.';
+  /** Logged warnings as `<source>: <message>`, sorted because both sources load concurrently. */
+  const warnings = (calls: Parameters<typeof logger.warning>[]) =>
+    calls
+      .map(
+        ([message, context]) =>
+          `${(context?.extra as { source?: string } | undefined)?.source}: ${message}`,
+      )
+      .sort();
+
+  it('fails start as before when the cache is empty and MITRE refuses, writing nothing', async () => {
+    const dir = await tempDir();
+    const clock = new Clock();
+    const catalog = cached(refusing(), dir, clock);
+    await expect(catalog.start()).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      data: { status: 403, retryable: true },
+    });
+    expect(() => catalog.snapshot()).toThrow(
+      expect.objectContaining({
+        data: expect.objectContaining({ reason: 'catalog_not_initialized' }),
+      }),
+    );
+    expect(clock.active()).toEqual([]);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it('touches no cache files when built without a cache directory', async () => {
+    const read = vi.spyOn(CatalogCache.prototype, 'read');
+    const write = vi.spyOn(CatalogCache.prototype, 'write');
+    const request = servingRequest(cweBytes('4.test'), capecBytes(), '4.next');
+    const clock = new Clock();
+    const catalog = service(request, clock);
+    await catalog.start();
+    clock.time += REFRESH_INTERVALS.capec;
+    await catalog.refresh();
+    expect(urls(request)).toEqual([
+      SOURCE_URLS.cwe,
+      SOURCE_URLS.capec,
+      SOURCE_URLS.cweVersion,
+      SOURCE_URLS.capec,
+      SOURCE_URLS.cwe,
+    ]);
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(catalog.snapshot().health.cwe.source).toBe('upstream');
+  });
+
+  it('saves each start download as its exact bytes with a sidecar bound to the parsed root', async () => {
+    const root = await tempDir();
+    const dir = join(root, 'nested', 'cache');
+    const cwe = cweBytes();
+    const capec = capecBytes();
+    const catalog = cached(servingRequest(cwe, capec), dir);
+    await catalog.start();
+    expect(new Uint8Array(await readFile(join(dir, CWE_FILE)))).toEqual(cwe);
+    expect(new Uint8Array(await readFile(join(dir, CAPEC_FILE)))).toEqual(capec);
+    expect(await sidecar(dir, CWE_FILE)).toEqual({
+      version: '4.test',
+      date: '2026-04-30',
+      sha256: createHash('sha256').update(cwe).digest('hex'),
+      fetchedAt: iso(initialTime),
+      lastModified: cweLastModified,
+    });
+    expect(await sidecar(dir, CAPEC_FILE)).toEqual({
+      version: '3.test',
+      date: '2023-01-24',
+      sha256: createHash('sha256').update(capec).digest('hex'),
+      fetchedAt: iso(initialTime),
+      etag: 'capec-tag',
+    });
+    expect((await readdir(dir)).sort()).toEqual(
+      [CAPEC_FILE, `${CAPEC_FILE}.json`, CWE_FILE, `${CWE_FILE}.json`].sort(),
+    );
+    expect(catalog.snapshot().health.cwe).toMatchObject({
+      source: 'upstream',
+      fetchedAt: iso(initialTime),
+      loadedAt: iso(initialTime),
+      lastSuccessfulCheckAt: iso(initialTime),
+      nextCheckAt: iso(initialTime + REFRESH_INTERVALS.cwe),
+    });
+  });
+
+  it('starts from the saved catalogs without a request while MITRE refuses, then checks at once', async () => {
+    const dir = await seededDir();
+    const request = refusing();
+    const clock = new Clock();
+    clock.time = initialTime + minutes(90);
+    const catalog = cached(request, dir, clock);
+    await catalog.start();
+    expect(request).not.toHaveBeenCalled();
+    expect(catalog.snapshot().provenance).toMatchObject({
+      cweVersion: '4.test',
+      capecVersion: '3.test',
+      loadedAt: iso(clock.time),
+    });
+    const { cwe, capec } = catalog.snapshot().health;
+    expect(cwe).toMatchObject({
+      source: 'cache',
+      fetchedAt: iso(initialTime),
+      lastModified: cweLastModified,
+      loadedAt: iso(clock.time),
+      nextCheckAt: iso(clock.time),
+      counts: { weaknesses: 2, categories: 1, views: 2 },
+    });
+    expect(capec).toMatchObject({
+      source: 'cache',
+      fetchedAt: iso(initialTime),
+      etag: 'capec-tag',
+      nextCheckAt: iso(clock.time),
+    });
+    expect(cwe).not.toHaveProperty('lastSuccessfulCheckAt');
+    expect(capec).not.toHaveProperty('lastSuccessfulCheckAt');
+    expect(clock.active().map((job) => job.at)).toEqual([clock.time]);
+    await catalog.dispose();
+    expect(clock.active()).toEqual([]);
+  });
+
+  it('retries a cache-loaded source after 5, 10, 20, 40, then every 60 minutes until a check succeeds', async () => {
+    const dir = await seededDir();
+    const request = refusing();
+    const clock = new Clock();
+    const catalog = cached(request, dir, clock);
+    await catalog.start();
+    for (const delay of [5, 10, 20, 40, 60, 60, 60].map(minutes)) {
+      clock.fireNext();
+      await catalog.refresh();
+      const { cwe, capec } = catalog.snapshot().health;
+      for (const health of [cwe, capec])
+        expect(health).toMatchObject({
+          source: 'cache',
+          lastCheckAt: iso(clock.time),
+          nextCheckAt: iso(clock.time + delay),
+          lastRefreshError: { code: JsonRpcErrorCode.ServiceUnavailable },
+        });
+      expect(cwe).not.toHaveProperty('lastSuccessfulCheckAt');
+      expect(clock.active().map((job) => job.at)).toEqual([clock.time + delay]);
+    }
+    // Each failed check asked only for the CWE version and the conditional CAPEC download.
+    expect(new Set(urls(request))).toEqual(new Set([SOURCE_URLS.cweVersion, SOURCE_URLS.capec]));
+    // Recovery: CWE reports the same version and CAPEC is unchanged, so both stay cache-sourced.
+    request.mockImplementation(async (url) =>
+      url === SOURCE_URLS.capec
+        ? new Response(null, { status: 304 })
+        : Response.json({ ContentVersion: '4.test', ContentDate: 'api-date' }),
+    );
+    clock.fireNext();
+    await catalog.refresh();
+    const recovered = catalog.snapshot().health;
+    expect(recovered.cwe).toMatchObject({
+      source: 'cache',
+      fetchedAt: iso(initialTime),
+      lastSuccessfulCheckAt: iso(clock.time),
+      nextCheckAt: iso(clock.time + REFRESH_INTERVALS.cwe),
+    });
+    expect(recovered.capec).toMatchObject({
+      source: 'cache',
+      lastSuccessfulCheckAt: iso(clock.time),
+      nextCheckAt: iso(clock.time + REFRESH_INTERVALS.capec),
+    });
+    expect(recovered.cwe).not.toHaveProperty('lastRefreshError');
+    // Seven failed checks and the recovery all sent the sidecar's validator: a failure keeps it.
+    expect(
+      request.mock.calls
+        .filter(([url]) => url === SOURCE_URLS.capec)
+        .map(([, options]) => options.headers),
+    ).toEqual(Array(8).fill({ 'If-None-Match': 'capec-tag' }));
+    // After one success a failed check waits for the ordinary interval again.
+    request.mockImplementation(async () => new Response(null, { status: 403 }));
+    clock.fireNext();
+    await catalog.refresh();
+    expect(catalog.snapshot().health.cwe).toMatchObject({
+      lastRefreshError: { code: JsonRpcErrorCode.ServiceUnavailable },
+      nextCheckAt: iso(clock.time + REFRESH_INTERVALS.cwe),
+    });
+  });
+
+  it('marks a refresh download as upstream and saves it over the cached copy', async () => {
+    const dir = await seededDir();
+    const clock = new Clock();
+    clock.time = initialTime + minutes(30);
+    const nextCwe = cweBytes('4.next');
+    const sameCapec = capecBytes();
+    const request = refusing();
+    const catalog = cached(request, dir, clock);
+    await catalog.start();
+    const startedAt = clock.time;
+    request.mockImplementation(servingRequest(nextCwe, sameCapec, '4.next'));
+    clock.time += minutes(1);
+    await catalog.refresh();
+    const { cwe, capec } = catalog.snapshot().health;
+    expect(cwe).toMatchObject({
+      source: 'upstream',
+      version: '4.next',
+      fetchedAt: iso(clock.time),
+      loadedAt: iso(clock.time),
+    });
+    // A 200 with the same root version replaces no records but is still a fresh download.
+    expect(capec).toMatchObject({
+      source: 'upstream',
+      version: '3.test',
+      fetchedAt: iso(clock.time),
+      loadedAt: iso(startedAt),
+    });
+    expect(urls(request)).toEqual([SOURCE_URLS.cweVersion, SOURCE_URLS.capec, SOURCE_URLS.cwe]);
+    expect(new Uint8Array(await readFile(join(dir, CWE_FILE)))).toEqual(nextCwe);
+    expect(await sidecar(dir, CWE_FILE)).toMatchObject({
+      version: '4.next',
+      fetchedAt: iso(clock.time),
+    });
+    expect(await sidecar(dir, CAPEC_FILE)).toMatchObject({ fetchedAt: iso(clock.time) });
+  });
+
+  /** A sidecar for the seeded CAPEC bytes, usable unless a field is overridden. */
+  const capecSidecar = (fields: Record<string, string> = {}) =>
+    JSON.stringify({
+      version: '3.test',
+      date: '2023-01-24',
+      sha256: createHash('sha256').update(capecBytes()).digest('hex'),
+      fetchedAt: '2026-10-19T00:00:00.000Z',
+      etag: 'stale',
+      ...fields,
+    });
+  it.each<[string, string | undefined, boolean]>([
+    ['usable', capecSidecar(), true],
+    ['missing', undefined, false],
+    ['unparseable', '{"version":', false],
+    [
+      'written for other bytes',
+      capecSidecar({ sha256: createHash('sha256').update(capecBytes('3.old')).digest('hex') }),
+      false,
+    ],
+    ['for another version', capecSidecar({ version: '3.old' }), false],
+    ['for another date', capecSidecar({ date: '2000-01-01' }), false],
+    ['holding an etag that is no header value', capecSidecar({ etag: 'a\r\nb' }), false],
+    ['holding a fetchedAt that is no time', capecSidecar({ fetchedAt: 'x' }), false],
+  ])(
+    'loads seeded bytes whose sidecar is %s, taking validators only from a usable one',
+    async (_case, content, usable) => {
+      const dir = await tempDir();
+      await writeFile(join(dir, CWE_FILE), cweBytes());
+      await writeFile(join(dir, CAPEC_FILE), capecBytes());
+      if (content !== undefined) await writeFile(join(dir, `${CAPEC_FILE}.json`), content);
+      const request = refusing();
+      const clock = new Clock();
+      const catalog = cached(request, dir, clock);
+      await catalog.start();
+      expect(request).not.toHaveBeenCalled();
+      const { capec } = catalog.snapshot().health;
+      expect(capec).toMatchObject({ source: 'cache', version: '3.test' });
+      expect(capec).not.toHaveProperty('lastSuccessfulCheckAt');
+      if (usable)
+        expect(capec).toMatchObject({ etag: 'stale', fetchedAt: '2026-10-19T00:00:00.000Z' });
+      else
+        for (const key of ['etag', 'lastModified', 'fetchedAt'])
+          expect(capec).not.toHaveProperty(key);
+      request.mockImplementation(servingRequest());
+      clock.fireNext();
+      await catalog.refresh();
+      const capecCall = request.mock.calls.find(([url]) => url === SOURCE_URLS.capec);
+      expect(capecCall?.[1].headers).toEqual(usable ? { 'If-None-Match': 'stale' } : {});
+      expect(catalog.snapshot().health.capec).toMatchObject({
+        source: 'upstream',
+        etag: 'capec-tag',
+        fetchedAt: iso(clock.time),
+      });
+      expect(await sidecar(dir, CAPEC_FILE)).toMatchObject({
+        version: '3.test',
+        etag: 'capec-tag',
+      });
+    },
+  );
+
+  it.each([
+    ['CWE', CWE_FILE, () => new Uint8Array(BYTE_LIMITS.cweDownload + 1)],
+    ['CWE', CWE_FILE, () => strToU8('not a zip')],
+    ['CWE', CWE_FILE, () => zipSync({ 'cwe.xml': strToU8('<WrongRoot/>') })],
+    ['CAPEC', CAPEC_FILE, () => new Uint8Array(BYTE_LIMITS.capecXml + 1).fill(0x20)],
+    ['CAPEC', CAPEC_FILE, () => new Uint8Array([0x3c, 0xff])],
+    ['CAPEC', CAPEC_FILE, () => strToU8('<WrongRoot/>')],
+  ] as const)(
+    'treats an unusable cached %s file as absent with one warning (%#)',
+    async (_name, file, bytes) => {
+      const dir = await seededDir();
+      await writeFile(join(dir, file), bytes());
+      const warning = vi.spyOn(logger, 'warning');
+      const cwe = cweBytes();
+      const capec = capecBytes();
+      const request = servingRequest(cwe, capec);
+      const catalog = cached(request, dir);
+      await catalog.start();
+      expect(warning).toHaveBeenCalledOnce();
+      expect(urls(request)).toEqual([file === CWE_FILE ? SOURCE_URLS.cwe : SOURCE_URLS.capec]);
+      const health = catalog.snapshot().health;
+      expect(file === CWE_FILE ? health.cwe.source : health.capec.source).toBe('upstream');
+      expect(file === CWE_FILE ? health.capec.source : health.cwe.source).toBe('cache');
+      // The synchronous download replaced the unusable file.
+      expect(new Uint8Array(await readFile(join(dir, file)))).toEqual(
+        file === CWE_FILE ? cwe : capec,
+      );
+    },
+  );
+
+  it('starts from the network with a warning when the cache path is a file', async () => {
+    const dir = await tempDir();
+    const path = join(dir, 'not-a-directory');
+    await writeFile(path, 'x');
+    const warning = vi.spyOn(logger, 'warning');
+    const catalog = cached(servingRequest(), path);
+    await catalog.start();
+    expect(catalog.snapshot().health.cwe.source).toBe('upstream');
+    // Reading under a file is "nothing cached"; only the failed saves warn.
+    expect(warnings(warning.mock.calls)).toEqual([`capec: ${SAVE_FAILED}`, `cwe: ${SAVE_FAILED}`]);
+    expect(await readFile(path, 'utf8')).toBe('x');
+  });
+
+  it('reads a read-only cache and keeps the previous copy when a refresh cannot save', async () => {
+    const dir = await seededDir();
+    const before = await readFile(join(dir, CWE_FILE));
+    await chmod(dir, 0o555);
+    const request = refusing();
+    const clock = new Clock();
+    const catalog = cached(request, dir, clock);
+    await catalog.start();
+    expect(catalog.snapshot().health.cwe.source).toBe('cache');
+    const warning = vi.spyOn(logger, 'warning');
+    request.mockImplementation(servingRequest(cweBytes('4.next'), capecBytes(), '4.next'));
+    clock.fireNext();
+    await catalog.refresh();
+    expect(catalog.snapshot().health.cwe).toMatchObject({ source: 'upstream', version: '4.next' });
+    expect(catalog.snapshot().health.cwe).not.toHaveProperty('lastRefreshError');
+    expect(warnings(warning.mock.calls)).toEqual([`capec: ${SAVE_FAILED}`, `cwe: ${SAVE_FAILED}`]);
+    expect(await readFile(join(dir, CWE_FILE))).toEqual(before);
+    expect((await readdir(dir)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('removes its temporary file when replacing a cached file fails', async () => {
+    const dir = await tempDir();
+    await mkdir(join(dir, CAPEC_FILE, 'occupied'), { recursive: true });
+    const warning = vi.spyOn(logger, 'warning');
+    const catalog = cached(servingRequest(), dir);
+    await catalog.start();
+    expect(catalog.snapshot().health.capec.source).toBe('upstream');
+    expect(warnings(warning.mock.calls)).toEqual([
+      `capec: ${SAVE_FAILED}`,
+      'capec: Ignoring a cached MITRE catalog that is not a file within its byte limit.',
+    ]);
+    expect((await readdir(dir)).sort()).toEqual([CAPEC_FILE, CWE_FILE, `${CWE_FILE}.json`].sort());
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'treats a FIFO at the data or sidecar path as unusable instead of blocking start',
+    async () => {
+      for (const name of [CWE_FILE, `${CAPEC_FILE}.json`]) {
+        const dir = await seededDir();
+        const path = join(dir, name);
+        await rm(path);
+        execFileSync('mkfifo', [path]);
+        const catalog = cached(servingRequest(), dir);
+        let guard: ReturnType<typeof setTimeout> | undefined;
+        const outcome = await Promise.race([
+          catalog.start().then(() => 'started'),
+          // Not a timing assertion: it only breaks a blocked open so a failure cannot wedge the worker.
+          new Promise<string>((resolve) => {
+            guard = setTimeout(() => resolve('blocked'), 3000);
+          }),
+        ]);
+        clearTimeout(guard);
+        if (outcome === 'blocked')
+          await open(path, constants.O_WRONLY | constants.O_NONBLOCK).then(
+            (writer) => writer.close(),
+            () => {},
+          );
+        expect(outcome).toBe('started');
+        const { cwe, capec } = catalog.snapshot().health;
+        expect([cwe.source, capec.source]).toEqual(
+          name === CWE_FILE ? ['upstream', 'cache'] : ['cache', 'cache'],
+        );
+        // A sidecar that is not a regular file supplies no validators.
+        if (name !== CWE_FILE) expect(capec).not.toHaveProperty('etag');
+      }
+    },
+  );
+
+  it('replaces both validators with those of a refresh download', async () => {
+    const dir = await seededDir();
+    const request = refusing();
+    const clock = new Clock();
+    const catalog = cached(request, dir, clock);
+    await catalog.start();
+    const lastModified = 'Mon, 01 Jun 2026 00:00:00 GMT';
+    request.mockImplementation(async (url) => {
+      if (url === SOURCE_URLS.capec)
+        return new Response(capecBytes('3.next'), { headers: { 'last-modified': lastModified } });
+      return Response.json({ ContentVersion: '4.test', ContentDate: 'api-date' });
+    });
+    clock.fireNext();
+    await catalog.refresh();
+    const { capec } = catalog.snapshot().health;
+    expect(capec).toMatchObject({ source: 'upstream', version: '3.next', lastModified });
+    expect(capec).not.toHaveProperty('etag');
+    clock.time += REFRESH_INTERVALS.capec;
+    request.mockImplementation(async () => new Response(null, { status: 304 }));
+    await catalog.refresh();
+    expect(request.mock.calls.at(-1)?.[1].headers).toEqual({ 'If-Modified-Since': lastModified });
+  });
+
+  it('removes cache temp files over an hour old, keeping a live writer’s and unrelated files', async () => {
+    const dir = await seededDir();
+    // Removal compares mtimes with Date.now(), so fix it and age each file around the hour.
+    const now = Date.parse('2026-10-21T12:00:00Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+    const files = {
+      stale: [`${CWE_FILE}.99999.0f0e1d2c-0000-4000-8000-000000000000.tmp`, 61],
+      live: [`${CAPEC_FILE}.json.99998.0f0e1d2c-0000-4000-8000-000000000001.tmp`, 59],
+      unrelated: ['notes.99997.0f0e1d2c-0000-4000-8000-000000000002.tmp', 120],
+    } as const;
+    for (const [name, ageMinutes] of Object.values(files)) {
+      const mtime = new Date(now - minutes(ageMinutes));
+      await writeFile(join(dir, name), 'partial');
+      await utimes(join(dir, name), mtime, mtime);
+    }
+    const request = refusing();
+    const clock = new Clock();
+    const catalog = cached(request, dir, clock);
+    await catalog.start();
+    request.mockImplementation(servingRequest(cweBytes('4.next'), capecBytes(), '4.next'));
+    clock.fireNext();
+    await catalog.refresh();
+    const temps = (await readdir(dir)).filter((name) => name.endsWith('.tmp'));
+    expect(temps.sort()).toEqual([files.live[0], files.unrelated[0]].sort());
   });
 });

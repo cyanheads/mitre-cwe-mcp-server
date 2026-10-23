@@ -62,6 +62,8 @@ describe('escapeMarkdown plain-text rules', () => {
     ['__init__', '\\_\\_init\\_\\_'],
     ['a_b', 'a_b'],
     ['x](y)', 'x\\](y)'],
+    // The escaped `]` keeps `[b]` from becoming a label, so `!` needs nothing.
+    ['a![b](c)', 'a![b\\](c)'],
     ['`', '\\`'],
     ['\\\\server', '\\\\\\server'],
     ['C:\\dir', 'C:\\dir'],
@@ -150,6 +152,30 @@ describe('escapeMarkdown document marks', () => {
     expect(escapeMarkdown(link, linkMarks)).toBe(link);
     expect(referenceDefinitions(link)).toEqual([]);
     expect(parseMarkdown(link).text).toBe('[a b]: c');
+  });
+
+  it('escapes a source ! only before a generated link bracket', () => {
+    const [link, linkMarks] = marked([
+      ['see!', Mark.text],
+      ['[', 0],
+      ['y', Mark.text | Mark.linkText],
+      ['](<https://example.test/>)', 0],
+    ]);
+    const stored = escapeMarkdown(link, linkMarks);
+    expect(stored).toBe('see\\![y](<https://example.test/>)');
+    expect(parseMarkdown(stored)).toEqual({
+      text: 'see!y',
+      nodes: ['document', 'paragraph', 'text', 'text', 'link', 'text'],
+    });
+    // A generated image already carries its own `!`.
+    const [image, imageMarks] = marked([
+      ['see!', Mark.text],
+      ['![', 0],
+      ['x', Mark.text | Mark.linkText],
+      ['](<https://example.test/x.png>)', 0],
+    ]);
+    expect(escapeMarkdown(image, imageMarks)).toBe(image);
+    expect(asDocument('see![y](z)')).toBe('see![y\\](z)');
   });
 
   it('escapes a pipe only inside a generated table cell', () => {
@@ -262,6 +288,7 @@ describe('escapeMarkdown timing', () => {
     ['line starts sharing one label', (length) => `${'[\n'.repeat(length / 2)}]: x`],
     ['escaped closers in one label', (length) => `[${'a](b'.repeat(length / 4)}]: x`],
     ['labels closing at every line', (length) => '[a]:\n'.repeat(length / 5)],
+    ['image openers', (length) => '!['.repeat(length / 2)],
   ];
   it('stays linear on adversarial plain text and documents', { timeout: 60_000 }, () => {
     for (const [label, build] of shapes) {

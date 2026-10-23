@@ -13,6 +13,8 @@ export type ExampleBlock =
 export interface DemonstrativeExample {
   blocks: readonly ExampleBlock[];
   index: number;
+  /** The example's own citations, resolved like the record's references. */
+  references?: readonly CatalogReference[];
 }
 
 /** A source-recorded crosswalk; optional fields preserve missing upstream facts. */
@@ -265,12 +267,16 @@ export interface CatalogHealth extends CatalogMetadata {
   apiVersion?: string;
   counts: Readonly<Record<string, number>>;
   etag?: string;
+  /** When the served bytes were downloaded; absent for a cached file with no matching sidecar. */
+  fetchedAt?: string;
   lastCheckAt?: string;
   lastModified?: string;
   lastRefreshError?: { code: number; message: string; time: string };
   lastSuccessfulCheckAt?: string;
   loadedAt: string;
   nextCheckAt: string;
+  /** `cache`: loaded from the cache directory at start and not downloaded since; `upstream`: downloaded by this process. */
+  source: 'cache' | 'upstream';
   sourceUrl: string;
 }
 

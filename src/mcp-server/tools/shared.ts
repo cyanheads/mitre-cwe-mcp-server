@@ -76,6 +76,11 @@ export const VIEW_ID = /^\s*(?:(?:(?:[Cc][Ww][Ee](?:[-_]|\s+)?)?0*([1-9]\d*)|([A
 export const CAPEC_ID = /^\s*(?:[Cc][Aa][Pp][Ee][Cc](?:[-_]|\s+)?)?0*([1-9]\d*)\s*$/;
 /** An ATT&CK technique or subtechnique, with or without its `T`, or blank for unset. */
 export const OPTIONAL_ATTACK_ID = /^\s*(?:[Tt]?(\d{4}(?:\.\d{3})?)\s*)?$/;
+/**
+ * A CVE ID in any case, or blank for unset. Linear: each whitespace run is bounded by an anchor or
+ * the literal prefix, and the digit runs by literals, an anchor, or whitespace they cannot overlap.
+ */
+export const OPTIONAL_CVE_ID = /^\s*(?:[Cc][Vv][Ee]-\d{4}-\d{4,}\s*)?$/;
 /** Accepted forms, named wherever a single-ID input is rejected. */
 export const CWE_ID_FORMS =
   'Use a CWE ID: a positive integer, optionally after CWE and a -, _, or space, such as CWE-79, CWE79, or 79.';
@@ -83,6 +88,8 @@ export const VIEW_ID_FORMS =
   'Use a CWE view ID: a positive integer, optionally after CWE and a -, _, or space, such as CWE-1000 or 1000.';
 export const ATTACK_ID_FORMS =
   'Use an ATT&CK technique ID: Tdddd or Tdddd.ddd, with or without the T, such as T1059 or T1059.001.';
+export const CVE_ID_FORMS =
+  'Use a CVE ID: CVE, a hyphen, a four-digit year, a hyphen, and a sequence of four or more digits, in any case, such as CVE-2021-44228.';
 
 /** Catalog ID family. */
 export type Family = 'CWE' | 'CAPEC';

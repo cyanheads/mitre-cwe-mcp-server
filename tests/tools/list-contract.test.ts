@@ -17,12 +17,14 @@ import {
   ATTACK_ID_FORMS,
   batchIds,
   CAPEC_ID,
+  CVE_ID_FORMS,
   CWE_ID,
   CWE_ID_FORMS,
   filterSchema,
   firstSentence,
   normalizeAttackId,
   OPTIONAL_ATTACK_ID,
+  OPTIONAL_CVE_ID,
   OPTIONAL_CWE_ID,
   parseId,
   VIEW_ID,
@@ -82,6 +84,34 @@ const terms = (...entries: [term: string, description?: string][]) =>
         `<Alternate_Term><Term>${term}</Term>${description ? `<Description>${description}</Description>` : ''}</Alternate_Term>`,
     )
     .join('')}</Alternate_Terms>`;
+/** One recorded taxonomy mapping; absent parts stay absent, as in the source. */
+const taxonomy = (name: string, parts: { id?: string; entry?: string; fit?: string } = {}) =>
+  `<Taxonomy_Mapping Taxonomy_Name="${name}">${parts.id ? `<Entry_ID>${parts.id}</Entry_ID>` : ''}${parts.entry ? `<Entry_Name>${parts.entry}</Entry_Name>` : ''}${parts.fit ? `<Mapping_Fit>${parts.fit}</Mapping_Fit>` : ''}</Taxonomy_Mapping>`;
+const observed = (reference: string, description: string) =>
+  `<Observed_Example><Reference>${reference}</Reference><Description>${description}</Description><Link>https://www.cve.org/CVERecord?id=${reference}</Link></Observed_Example>`;
+/**
+ * Taxonomy mappings and observed examples on CWE-10, 11, and 12 and on category 900: an Entry_ID in
+ * two taxonomies (A1), one repeated within a weakness (Part 4-2), a mapping without an Entry_ID, a
+ * CVE cited twice on one weakness, and a non-CVE reference.
+ */
+const withEvidence = (xml: string) =>
+  xml
+    .replace(
+      '<Usage>Allowed</Usage></Mapping_Notes>',
+      `<Usage>Allowed</Usage></Mapping_Notes><Observed_Examples>${observed('CVE-2021-44228', 'Logging library evaluates *lookups* in messages.')}${observed('[REF-1374]', 'Not a CVE.')}</Observed_Examples><Taxonomy_Mappings>${taxonomy('CERT C Secure Coding', { id: 'ARR30-C', entry: 'Do not form or use out-of-bounds pointers or array subscripts', fit: 'CWE More Abstract' })}${taxonomy('OWASP Top Ten 2004', { id: 'A1', entry: 'Unvalidated Input', fit: 'CWE More Specific' })}${taxonomy('7 Pernicious Kingdoms', { entry: 'Buffer Overflow' })}</Taxonomy_Mappings>`,
+    )
+    .replace(
+      '<Usage>Allowed-with-Review</Usage></Mapping_Notes>',
+      `<Usage>Allowed-with-Review</Usage></Mapping_Notes><Observed_Examples>${observed('CVE-2014-1266', 'Duplicate goto skips a check.')}${observed('CVE-2021-44228', 'First citation.')}${observed('CVE-2021-44228', 'Second citation.')}</Observed_Examples><Taxonomy_Mappings>${taxonomy('OWASP Top Ten 2007', { id: 'A1', entry: 'Cross Site Scripting (XSS)', fit: 'CWE More Specific' })}${taxonomy('ISA/IEC 62443', { id: 'Part 4-2', entry: 'Req CR 1.1' })}${taxonomy('ISA/IEC 62443', { id: 'Part 3-3', entry: 'Req SR 1.1' })}${taxonomy('ISA/IEC 62443', { id: 'Part 4-2', entry: 'Req CR 2.1' })}</Taxonomy_Mappings>`,
+    )
+    .replace(
+      '<Usage>Discouraged</Usage></Mapping_Notes>',
+      `<Usage>Discouraged</Usage></Mapping_Notes><Taxonomy_Mappings>${taxonomy('CERT C Secure Coding', { id: 'ARR30-C', fit: 'Imprecise' })}</Taxonomy_Mappings>`,
+    )
+    .replace(
+      '<Summary>Grouping.</Summary>',
+      `<Summary>Grouping.</Summary><Taxonomy_Mappings>${taxonomy('Category Taxonomy', { id: 'ARR00-C' })}${taxonomy('CERT C Secure Coding', { id: 'ARR00-C' })}</Taxonomy_Mappings>`,
+    );
 function catalogs(version = '4.list') {
   const rows = [
     weakness(
@@ -822,6 +852,136 @@ describe('complete local search and view contracts', () => {
     }
   });
 
+  it('matches text tokens at word starts only, on every filter tool and every zero-hit re-search', async () => {
+    const zeroHits = [
+      // CWE-14 holds "information" and CAPEC-20 "Interception": the tokens occur only inside words.
+      [
+        cweSearchWeaknesses,
+        { filter: 'format' },
+        'No weakness matched the text filter "format". Repeat cwe_search_weaknesses with a different term.',
+      ],
+      [
+        cweSearchWeaknesses,
+        { filter: 'zzqx format' },
+        'No weakness matched every token of the text filter "zzqx format". Repeat cwe_search_weaknesses with different terms.',
+      ],
+      // The view's re-search of the other filters alone applies the same rule.
+      [
+        cweSearchWeaknesses,
+        { filter: 'format', viewId: '1000' },
+        'No weaknesses matched this view and the other filters. Call cwe_get_view for its direct members, or repeat cwe_search_weaknesses with fewer filters.',
+      ],
+      [
+        cweSearchAttackPatterns,
+        { filter: 'cept' },
+        'No CAPEC pattern matched the text filter "cept". Repeat cwe_search_attack_patterns with a different term.',
+      ],
+      [
+        cweSearchAttackPatterns,
+        { filter: 'zzqx cept' },
+        'No CAPEC pattern matched every token of the text filter "zzqx cept". Repeat cwe_search_attack_patterns with different terms.',
+      ],
+      // So does the re-search that includes inactive patterns.
+      [
+        cweSearchAttackPatterns,
+        { filter: 'solete' },
+        'No CAPEC pattern matched the text filter "solete". Repeat cwe_search_attack_patterns with a different term.',
+      ],
+      [
+        cweListReference,
+        { topic: 'views', filter: 'tered' },
+        'No reference item matched the filter "tered". Repeat cwe_list_reference without filter to list every item in topic views.',
+      ],
+      [
+        cweListReference,
+        { topic: 'views', filter: 'zzqx tered' },
+        'No reference item matched every token of the filter "zzqx tered". Repeat cwe_list_reference without filter to list every item in topic views.',
+      ],
+    ] as const;
+    for (const [definition, args, visible] of zeroHits) {
+      const wire = await runToolContract(definition, args);
+      expect(wire.isError, JSON.stringify(args)).not.toBe(true);
+      expect(wire.structuredContent, JSON.stringify(args)).toMatchObject({ totalCount: 0 });
+      const { notice } = wire.structuredContent as { notice: string };
+      expect(parseMarkdown(notice).text, JSON.stringify(args)).toBe(visible);
+      expect(lines(wire)).toContain(`> ${notice}`);
+    }
+    // The whole word still matches, on both surfaces.
+    for (const [definition, args, key, expected] of [
+      [cweSearchWeaknesses, { filter: 'information' }, 'id', ['CWE-14']],
+      [cweSearchAttackPatterns, { filter: 'interception' }, 'id', ['CAPEC-20']],
+      [cweListReference, { topic: 'views', filter: 'filtered' }, 'label', ['Filtered']],
+    ] as const) {
+      const wire = await runToolContract(definition, args);
+      expect(wire.structuredContent).toMatchObject({ totalCount: expected.length });
+      expect(copied(wire, key)).toEqual(expected);
+    }
+    // A camelCase hump is a word start in a label too; a lowercase run is not.
+    await disposeCatalogService();
+    await load(undefined, (xml) =>
+      xml.replace(
+        '<Language Name="C" Class="Compiled"/>',
+        '<Language Name="C" Class="Compiled"/><Language Name="JavaScript"/><Language Name="Typescript"/>',
+      ),
+    );
+    const platforms = async (filter: string) => {
+      const wire = await runToolContract(cweListReference, { topic: 'platforms', filter });
+      expect(wire.isError, filter).not.toBe(true);
+      return copied(wire, 'label');
+    };
+    expect(await platforms('script')).toEqual(['JavaScript']);
+    expect(await platforms('javascript')).toEqual(['JavaScript']);
+    expect(await platforms('avascript')).toEqual([]);
+  });
+
+  it('accepts a status only categories carry, returns no rows, and says why on both surfaces', async () => {
+    await disposeCatalogService();
+    await load(undefined, (xml) =>
+      xml.replace(
+        '<Category ID="901" Name="Nested" Status="Stable">',
+        '<Category ID="901" Name="Nested" Status="Obsolete">',
+      ),
+    );
+    const categoryOnly =
+      'Status Obsolete occurs only on CWE categories, which cwe_search_weaknesses excludes. Call cwe_list_reference with topic filter_values for the statuses weaknesses carry.';
+    for (const [args, visible] of [
+      [{ status: 'obsolete' }, categoryOnly],
+      [{ status: 'Obsolete', filter: 'needle', viewId: '1000' }, categoryOnly],
+      [{ status: ' OBSOLETE ', language: 'c', mappingUsage: 'allowed' }, categoryOnly],
+      // An unevaluated view filter is still disclosed first.
+      [
+        { status: 'obsolete', viewId: '1002' },
+        `View CWE-1002 is defined by a source filter (filterDefinition) with a part this server does not evaluate, so the filter selected no weaknesses here; this does not establish that none belong to the view. Call cwe_get_view to read the filter, or repeat cwe_search_weaknesses with fewer filters. ${categoryOnly}`,
+      ],
+    ] as const) {
+      const wire = await runToolContract(cweSearchWeaknesses, args);
+      expect(wire.isError, JSON.stringify(args)).not.toBe(true);
+      expect(wire.structuredContent).toMatchObject({
+        results: [],
+        totalCount: 0,
+        appliedFilters: { status: 'Obsolete' },
+      });
+      const { notice } = wire.structuredContent as { notice: string };
+      expect(parseMarkdown(notice).text, JSON.stringify(args)).toBe(visible);
+      expect(lines(wire)).toContain(`> ${notice}`);
+      expect(copied(wire, 'status')).toEqual(['Obsolete']);
+    }
+    // An unknown status lists the statuses weaknesses carry, never the category-only one.
+    const unknown = await runToolContract(cweSearchWeaknesses, { status: 'Foo' });
+    const message = 'Unknown status "Foo"; supported values: Deprecated, Stable.';
+    expect(unknown.structuredContent).toMatchObject({
+      error: {
+        message,
+        data: { reason: 'unknown_filter', field: 'status', supported: ['Deprecated', 'Stable'] },
+      },
+    });
+    expect(lines(unknown)).toContain(`Error: ${message}`);
+    // A weakness status filters as before.
+    expect((await search({ status: 'deprecated' })).results.map((row) => row.id)).toEqual([
+      'CWE-13',
+    ]);
+  });
+
   it('rejects a filter holding a control character that catalog text cannot contain, on every filter tool', async () => {
     // XML 1.0 text holds no C0 control other than whitespace, so such a filter could never match.
     const schema = filterSchema('Filter.');
@@ -982,6 +1142,10 @@ describe('complete local search and view contracts', () => {
       abstraction: '',
       consequenceImpact: ' ',
       status: ' ',
+      mappingUsage: ' ',
+      taxonomyName: ' ',
+      taxonomyEntryId: ' ',
+      observedCveId: ' ',
       viewId: ' ',
       cursor: ' ',
     });
@@ -1104,6 +1268,288 @@ describe('complete local search and view contracts', () => {
     expect(rebound.structuredContent).toMatchObject({
       error: { data: { reason: 'invalid_cursor' } },
     });
+  });
+
+  it('never matches a taxonomy entry ID or a CVE as text, and adds no matched fields without their filters', async () => {
+    const before = await runToolContract(cweSearchWeaknesses, { filter: 'needle alpha' });
+    await disposeCatalogService();
+    await load(undefined, withEvidence);
+    for (const filter of ['ARR30-C', 'arr30', 'CVE-2021-44228', 'Part 4-2', 'Pernicious'])
+      expect((await search({ filter })).results, filter).toEqual([]);
+    // Recorded mappings and examples change no response that does not filter by them.
+    const after = await runToolContract(cweSearchWeaknesses, { filter: 'needle alpha' });
+    expect(after.structuredContent).toEqual(before.structuredContent);
+    expect(after.content).toEqual(before.content);
+  });
+
+  it('finds weaknesses by taxonomy mapping and observed-example CVE and lists the matches on both surfaces', async () => {
+    await disposeCatalogService();
+    await load(undefined, withEvidence);
+    const byEntry = await runToolContract(cweSearchWeaknesses, { taxonomyEntryId: ' arr30-c ' });
+    expect(byEntry.isError).not.toBe(true);
+    expect(cweSearchWeaknesses.output.parse(byEntry.structuredContent)).toBeTruthy();
+    expect(byEntry.structuredContent).toMatchObject({
+      results: [
+        {
+          id: 'CWE-10',
+          matchedTaxonomyMappings: [
+            {
+              taxonomy: 'CERT C Secure Coding',
+              id: 'ARR30-C',
+              name: 'Do not form or use out-of-bounds pointers or array subscripts',
+              fit: 'CWE More Abstract',
+            },
+          ],
+        },
+        {
+          id: 'CWE-12',
+          matchedTaxonomyMappings: [
+            { taxonomy: 'CERT C Secure Coding', id: 'ARR30-C', fit: 'Imprecise' },
+          ],
+        },
+      ],
+      appliedFilters: { taxonomyEntryId: 'ARR30-C', limit: 20 },
+      totalCount: 2,
+    });
+    const rows = (byEntry.structuredContent as { results: Record<string, unknown>[] }).results;
+    for (const row of rows) expect(row).not.toHaveProperty('matchedObservedExamples');
+    // content[] carries each matched mapping field by field, in schema order, after the row.
+    const rendered = lines(byEntry).filter(Boolean);
+    const start = rendered.indexOf('**matchedTaxonomyMappings**');
+    expect(rendered.slice(start, start + 10)).toEqual([
+      '**matchedTaxonomyMappings**',
+      '**1**',
+      '**taxonomy**',
+      '> CERT C Secure Coding',
+      '**id**',
+      '> ARR30-C',
+      '**name**',
+      '> Do not form or use out-of-bounds pointers or array subscripts',
+      '**fit**',
+      '> CWE More Abstract',
+    ]);
+    expect(rendered.filter((line) => line === '**matchedTaxonomyMappings**')).toHaveLength(2);
+    expect(copied(byEntry, 'taxonomyEntryId')).toEqual(['ARR30-C']);
+
+    // A CVE cited twice on one weakness appears twice, in source order, beside its description.
+    const byCve = await runToolContract(cweSearchWeaknesses, { observedCveId: ' cve-2021-44228 ' });
+    expect(byCve.isError).not.toBe(true);
+    expect(cweSearchWeaknesses.output.parse(byCve.structuredContent)).toBeTruthy();
+    const link = 'https://www.cve.org/CVERecord?id=CVE-2021-44228';
+    expect(byCve.structuredContent).toMatchObject({
+      results: [
+        {
+          id: 'CWE-10',
+          matchedObservedExamples: [
+            {
+              reference: 'CVE-2021-44228',
+              description: 'Logging library evaluates \\*lookups\\* in messages.',
+              link,
+            },
+          ],
+        },
+        {
+          id: 'CWE-11',
+          matchedObservedExamples: [
+            { reference: 'CVE-2021-44228', description: 'First citation.', link },
+            { reference: 'CVE-2021-44228', description: 'Second citation.', link },
+          ],
+        },
+      ],
+      appliedFilters: { observedCveId: 'CVE-2021-44228' },
+      totalCount: 2,
+    });
+    for (const row of (byCve.structuredContent as { results: Record<string, unknown>[] }).results)
+      expect(row).not.toHaveProperty('matchedTaxonomyMappings');
+    expect(copied(byCve, 'description').map((line) => parseMarkdown(line).text)).toEqual([
+      'Logging library evaluates *lookups* in messages.',
+      'First citation.',
+      'Second citation.',
+    ]);
+    expect(copied(byCve, 'reference')).toEqual(Array(3).fill('CVE-2021-44228'));
+    expect(lines(byCve).filter((line) => line === `[${link}](<${link}>)`)).toHaveLength(3);
+    expect(copied(byCve, 'observedCveId')).toEqual(['CVE-2021-44228']);
+
+    // An Entry_ID alone matches every taxonomy; with a name, both hold on one mapping.
+    const ids = async (args: Record<string, unknown>) =>
+      cweSearchWeaknesses.output
+        .parse((await runToolContract(cweSearchWeaknesses, args)).structuredContent)
+        .results.map((row) => [
+          row.id,
+          row.matchedTaxonomyMappings?.map((item) => `${item.taxonomy} ${item.id ?? '-'}`),
+        ]);
+    expect(await ids({ taxonomyEntryId: 'A1' })).toEqual([
+      ['CWE-10', ['OWASP Top Ten 2004 A1']],
+      ['CWE-11', ['OWASP Top Ten 2007 A1']],
+    ]);
+    expect(await ids({ taxonomyEntryId: 'a1', taxonomyName: 'owasp top ten 2007' })).toEqual([
+      ['CWE-11', ['OWASP Top Ten 2007 A1']],
+    ]);
+    expect(await ids({ taxonomyName: 'isa/iec 62443', taxonomyEntryId: 'part  4-2' })).toEqual([
+      ['CWE-11', ['ISA/IEC 62443 Part 4-2', 'ISA/IEC 62443 Part 4-2']],
+    ]);
+    expect(await ids({ taxonomyName: 'ISA/IEC 62443' })).toEqual([
+      ['CWE-11', ['ISA/IEC 62443 Part 4-2', 'ISA/IEC 62443 Part 3-3', 'ISA/IEC 62443 Part 4-2']],
+    ]);
+    // A name alone matches a mapping without an Entry_ID, which renders no id.
+    const kingdoms = await runToolContract(cweSearchWeaknesses, {
+      taxonomyName: '7 pernicious kingdoms',
+    });
+    expect(kingdoms.structuredContent).toMatchObject({
+      results: [
+        {
+          id: 'CWE-10',
+          matchedTaxonomyMappings: [{ taxonomy: '7 Pernicious Kingdoms', name: 'Buffer Overflow' }],
+        },
+      ],
+      appliedFilters: { taxonomyName: '7 Pernicious Kingdoms' },
+    });
+    expect(
+      (kingdoms.structuredContent as { results: { matchedTaxonomyMappings: object[] }[] })
+        .results[0]?.matchedTaxonomyMappings[0],
+    ).not.toHaveProperty('id');
+    const kingdomLines = lines(kingdoms).filter(Boolean);
+    const block = kingdomLines.indexOf('**matchedTaxonomyMappings**');
+    expect(kingdomLines.slice(block, block + 7)).toEqual([
+      '**matchedTaxonomyMappings**',
+      '**1**',
+      '**taxonomy**',
+      '> 7 Pernicious Kingdoms',
+      '**name**',
+      '> Buffer Overflow',
+      '**pagination**',
+    ]);
+    // Combined with each other and the existing filters by AND.
+    expect(
+      await ids({ observedCveId: 'CVE-2021-44228', taxonomyEntryId: 'A1', language: 'c' }),
+    ).toEqual([['CWE-10', ['OWASP Top Ten 2004 A1']]]);
+    // A category's mapping never matches: search covers weaknesses only.
+    expect(await ids({ taxonomyEntryId: 'ARR00-C' })).toEqual([]);
+  });
+
+  it('rejects an unknown taxonomy name and a taxonomy entry ID holding a control character', async () => {
+    await disposeCatalogService();
+    await load(undefined, withEvidence);
+    const unknown = await runToolContract(cweSearchWeaknesses, { taxonomyName: 'CERT C' });
+    const message =
+      'Unknown taxonomyName "CERT C"; supported values: 7 Pernicious Kingdoms, CERT C Secure Coding, ISA/IEC 62443, OWASP Top Ten 2004, OWASP Top Ten 2007.';
+    const hint =
+      'Call cwe_list_reference for supported views and filter vocabulary, then repeat cwe_search_weaknesses.';
+    expect(unknown.structuredContent).toMatchObject({
+      error: {
+        message,
+        data: {
+          reason: 'unknown_filter',
+          field: 'taxonomyName',
+          value: 'CERT C',
+          recovery: { hint },
+        },
+      },
+    });
+    expect(lines(unknown)).toEqual(
+      expect.arrayContaining([`Error: ${message}`, `Recovery: ${hint}`]),
+    );
+    // An Entry_ID holding a control character could never match.
+    const control = await runToolContract(cweSearchWeaknesses, { taxonomyEntryId: 'A\u00001' });
+    expect(control.structuredContent).toMatchObject({
+      error: { code: -32602, data: { reason: 'invalid_arguments' } },
+    });
+    for (const surface of [control.content, control.structuredContent])
+      expect(JSON.stringify(surface)).toContain(
+        'taxonomyEntryId: Remove control characters U+0000–U+0008 and U+000E–U+001F',
+      );
+  });
+
+  it('explains a zero-hit taxonomy or CVE search by what emptied it, and binds the filters into cursors', async () => {
+    await disposeCatalogService();
+    await load(undefined, (xml) =>
+      withEvidence(xml).replace(
+        '<Category ID="901" Name="Nested" Status="Stable">',
+        '<Category ID="901" Name="Nested" Status="Obsolete">',
+      ),
+    );
+    const unrecorded = (filters: string, repeat: string) =>
+      `No weakness records a taxonomy mapping or observed example matching these filters (${filters}); this does not establish that no weakness applies. Repeat cwe_search_weaknesses ${repeat}.`;
+    const generic = (filters: string) =>
+      `No weaknesses matched the applied filters (${filters}). Call cwe_list_reference for supported vocabulary, or repeat cwe_search_weaknesses with fewer filters.`;
+    for (const [args, visible] of [
+      [
+        { observedCveId: 'CVE-2021-4422' },
+        unrecorded('observedCveId: CVE-2021-4422', 'without them, or with a text filter'),
+      ],
+      // Each holds somewhere, never on one mapping.
+      [
+        { taxonomyName: 'CERT C Secure Coding', taxonomyEntryId: 'a1' },
+        unrecorded(
+          'taxonomyName: CERT C Secure Coding, taxonomyEntryId: A1',
+          'without them, or with a text filter',
+        ),
+      ],
+      // The other filters match a weakness alone, so dropping the evidence filters returns some.
+      [
+        { abstraction: 'class', taxonomyEntryId: 'ZZZ-1' },
+        unrecorded('taxonomyEntryId: ZZZ-1', 'without them, or with a text filter'),
+      ],
+      // The other filters match nothing alone, so only fewer filters can return a weakness.
+      [
+        { language: 'c', status: 'deprecated', observedCveId: 'cve-2021-4422' },
+        unrecorded('observedCveId: CVE-2021-4422', 'with fewer filters'),
+      ],
+      // Some weakness records this CVE, and only the other filters exclude it.
+      [
+        { status: 'deprecated', observedCveId: 'CVE-2021-44228' },
+        generic('status: Deprecated, observedCveId: CVE-2021-44228'),
+      ],
+      // With a view, the view notices apply and these count as other filters.
+      [
+        { observedCveId: 'CVE-2021-4422', viewId: '1000' },
+        'No weaknesses matched this view and the other filters. Call cwe_get_view for its direct members, or repeat cwe_search_weaknesses with fewer filters.',
+      ],
+      [
+        { observedCveId: 'CVE-2014-1266', viewId: '1001' },
+        'No weakness that the source filter of view CWE-1001 selects matches the other filters. Call cwe_get_view to read its filterDefinition, or repeat cwe_search_weaknesses with fewer filters.',
+      ],
+      // A status only categories carry explains the whole result first.
+      [
+        { observedCveId: 'CVE-2021-4422', status: 'obsolete' },
+        'Status Obsolete occurs only on CWE categories, which cwe_search_weaknesses excludes. Call cwe_list_reference with topic filter_values for the statuses weaknesses carry.',
+      ],
+    ] as const) {
+      const wire = await runToolContract(cweSearchWeaknesses, args);
+      expect(wire.isError, JSON.stringify(args)).not.toBe(true);
+      expect(wire.structuredContent).toMatchObject({ results: [], totalCount: 0 });
+      const { notice } = wire.structuredContent as { notice: string };
+      expect(parseMarkdown(notice).text, JSON.stringify(args)).toBe(visible);
+      expect(lines(wire)).toContain(`> ${notice}`);
+    }
+    // Caller text in the notice is literal text.
+    const quoted = await runToolContract(cweSearchWeaknesses, { taxonomyEntryId: '*x* [a](b)' });
+    const { notice } = quoted.structuredContent as { notice: string };
+    expect(parseMarkdown(notice).text).toBe(
+      unrecorded('taxonomyEntryId: *x* [a](b)', 'without them, or with a text filter'),
+    );
+    expect(parseMarkdown(notice).nodes).not.toContain('link');
+
+    // Cursors bind the canonical filters: a respelling continues, another value is rejected.
+    const first = await search({ taxonomyEntryId: 'A1', limit: 1 });
+    expect(first.results.map((row) => row.id)).toEqual(['CWE-10']);
+    const cursor = first.pagination.nextCursor;
+    expect(
+      (await search({ taxonomyEntryId: ' a1 ', limit: 1, cursor })).results.map((row) => row.id),
+    ).toEqual(['CWE-11']);
+    const unfilteredCursor = (await search({ limit: 1 })).pagination.nextCursor;
+    for (const args of [
+      { taxonomyEntryId: 'ARR30-C', limit: 1, cursor },
+      { taxonomyEntryId: 'A1', taxonomyName: 'OWASP Top Ten 2004', limit: 1, cursor },
+      { taxonomyEntryId: 'A1', observedCveId: 'CVE-2021-44228', limit: 1, cursor },
+      { observedCveId: 'CVE-2021-44228', limit: 1, cursor: unfilteredCursor },
+      { taxonomyName: '7 Pernicious Kingdoms', limit: 1, cursor: unfilteredCursor },
+    ]) {
+      const wire = await runToolContract(cweSearchWeaknesses, args);
+      expect(wire.structuredContent, JSON.stringify(args)).toMatchObject({
+        error: { data: { reason: 'invalid_cursor' } },
+      });
+    }
   });
 
   it('returns recorded view notes on every member page and on both surfaces', async () => {
@@ -1364,6 +1810,17 @@ describe('identifier grammar', () => {
     'all',
     ' ALL ',
     'al l',
+    'CVE-2021-44228',
+    ' cve-2021-44228 ',
+    'Cve-2017-1000095',
+    'CVE-2002-216',
+    'CVE-21-44228',
+    'CVE 2021-44228',
+    'CVE_2021_44228',
+    'CVE-2021-44228x',
+    'CVE-2021-44228 CVE-2021-44229',
+    '2021-44228',
+    'CVE-٢٠٢١-44228',
     '',
     ' ',
     '\t',
@@ -1392,6 +1849,11 @@ describe('identifier grammar', () => {
     ['t1059', 'T1059'],
     ['1059', 'T1059'],
   ]);
+  const cve = new Map([
+    ['CVE-2021-44228', 'CVE-2021-44228'],
+    [' cve-2021-44228 ', 'CVE-2021-44228'],
+    ['Cve-2017-1000095', 'CVE-2017-1000095'],
+  ]);
   const inputs = [
     [cweGetView, 'id', (form: string) => cwe.has(form)],
     [cweGetHierarchy, 'id', (form: string) => cwe.has(form)],
@@ -1401,6 +1863,7 @@ describe('identifier grammar', () => {
       (form: string) => cwe.has(form) || blank.has(form) || form.trim().toLowerCase() === 'all',
     ],
     [cweSearchWeaknesses, 'viewId', (form: string) => cwe.has(form) || blank.has(form)],
+    [cweSearchWeaknesses, 'observedCveId', (form: string) => cve.has(form) || blank.has(form)],
     [cweSearchAttackPatterns, 'cweId', (form: string) => cwe.has(form) || blank.has(form)],
     [
       cweSearchAttackPatterns,
@@ -1457,6 +1920,19 @@ describe('identifier grammar', () => {
       const scoped = await runToolContract(cweSearchWeaknesses, { viewId: form });
       const code = (scoped.structuredContent as { error?: { code: number } }).error?.code;
       expect(code === -32602, label).toBe(!cwe.has(form) && !blank.has(form));
+      // A well-formed CVE no weakness cites is a zero-hit answer, echoed uppercase.
+      const cited = await runToolContract(cweSearchWeaknesses, { observedCveId: form });
+      if (cve.has(form))
+        expect(cited.structuredContent, label).toMatchObject({
+          totalCount: 0,
+          appliedFilters: { observedCveId: cve.get(form) },
+        });
+      else if (blank.has(form)) expect(cited.isError, label).not.toBe(true);
+      else {
+        expect(cited.structuredContent, label).toMatchObject({ error: { code: -32602 } });
+        for (const surface of [cited.content, cited.structuredContent])
+          expect(JSON.stringify(surface), label).toContain(`observedCveId: ${CVE_ID_FORMS}`);
+      }
     }
     // Integer transport values, as JSON delivers them, are still repaired before the pattern applies.
     const integerView = await runToolContract(
@@ -1475,12 +1951,23 @@ describe('identifier grammar', () => {
 
   it('parses caller-sized text in linear time', { timeout: 60_000 }, () => {
     const parse = (value: string) => {
-      for (const pattern of [CWE_ID, OPTIONAL_CWE_ID, VIEW_ID, CAPEC_ID, OPTIONAL_ATTACK_ID])
+      for (const pattern of [
+        CWE_ID,
+        OPTIONAL_CWE_ID,
+        VIEW_ID,
+        CAPEC_ID,
+        OPTIONAL_ATTACK_ID,
+        OPTIONAL_CVE_ID,
+      ])
         pattern.test(value);
       return batchIds([value], 'CWE');
     };
     const shapes: [string, (length: number) => string][] = [
       ['digit run', (length) => '7'.repeat(length)],
+      ['CVE sequence digits before text', (length) => `CVE-2021-${'7'.repeat(length)}x`],
+      ['CVE then whitespace before text', (length) => `CVE-2021-44228${' '.repeat(length)}x`],
+      ['whitespace before a CVE that fails', (length) => `${' '.repeat(length)}CVE-2021-44228x`],
+      ['repeated CVE prefixes', (length) => 'CVE-2021-'.repeat(length / 9)],
       ['zeros with no digit after them', (length) => `${'0'.repeat(length)}x`],
       ['whitespace before text', (length) => `${' '.repeat(length)}x`],
       ['prefix and whitespace before text', (length) => `CWE${' '.repeat(length)}x`],

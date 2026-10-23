@@ -8,11 +8,15 @@
       <Demonstrative_Examples>
         <Demonstrative_Example>
           <Intro_Text>Before code.</Intro_Text>
-          <Example_Code Nature="Bad" Language="C"><xhtml:div>if (a &lt; b) {<xhtml:br/>  call(&quot;x&quot;);<xhtml:br/>}</xhtml:div><xhtml:div>next();</xhtml:div></Example_Code>
+          <Example_Code Nature="Bad" Language="C">
+            <xhtml:div>if (a &lt; b) {<xhtml:div style="margin-left:1em;">call(&quot;x&quot;);</xhtml:div>}</xhtml:div>
+            <xhtml:div>next();</xhtml:div>
+          </Example_Code>
           <Body_Text>Between code.</Body_Text>
           <Example_Code><![CDATA[  literal <tag> &amp;
     next();]]></Example_Code>
           <Body_Text>After code.</Body_Text>
+          <References><Reference External_Reference_ID="REF-2" Section="Figure 3"/></References>
         </Demonstrative_Example>
         <Demonstrative_Example><Body_Text>Second example.</Body_Text></Demonstrative_Example>
       </Demonstrative_Examples>
@@ -26,5 +30,5 @@
     <View ID="1000" Name="Navigation" Type="Graph" Status="Stable"><Objective>Explore.</Objective><Audience><Stakeholder><Type>Developer</Type><Description>Build software.</Description></Stakeholder></Audience><Members><Has_Member CWE_ID="900" View_ID="1000"/><Has_Member CWE_ID="79" View_ID="1000"/></Members></View>
     <View ID="1001" Name="Filtered" Type="Implicit" Status="Draft"><Filter>/Weakness_Catalog/*/*[@Status='Draft']</Filter></View>
   </Views>
-  <External_References><External_Reference Reference_ID="REF-1"><Author>Alice</Author><Author>Bob</Author><Title>Reference</Title><Publication_Year>2026</Publication_Year><URL>https://example.test/ref</URL></External_Reference></External_References>
+  <External_References><External_Reference Reference_ID="REF-1"><Author>Alice</Author><Author>Bob</Author><Title>Reference</Title><Publication_Year>2026</Publication_Year><URL>https://example.test/ref</URL></External_Reference><External_Reference Reference_ID="REF-2"><Author>Carol</Author><Title>Example source</Title><URL>https://example.test/example-source</URL></External_Reference></External_References>
 </Weakness_Catalog>

@@ -6,7 +6,12 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCatalogService } from '@/services/index.js';
 import { batchOutput, weaknessEntrySchema } from '../catalog-schemas.js';
-import { detailEnrichment, getWeaknessDetails, weaknessSections } from '../detail-projection.js';
+import {
+  DEFAULT_EXAMPLE_LIMIT,
+  detailEnrichment,
+  getWeaknessDetails,
+  weaknessSections,
+} from '../detail-projection.js';
 import {
   detailEnrichmentTrailer,
   formatCatalog,
@@ -19,7 +24,7 @@ import {
 export const cweGetWeakness = tool('cwe_get_weakness', {
   title: 'Retrieve CWE weaknesses',
   description:
-    'Retrieve CWE weaknesses or categories by ID, such as CWE-79, CWE79, or 79. Processes up to 20 distinct IDs within a 24,000-byte response budget and discloses deferred IDs; a view, a CAPEC ID, or an item that is no ID returns in notFound with recovery guidance; only an item holding a control character other than whitespace, or a non-ID item over 150 characters, rejects the whole call. Defaults to summary, consequences, mitigations, and relations; a default section that does not fit the budget is omitted whole and named with its size and a re-call (kind partial). Summary carries recorded alternate terms such as XSS, ordinalities (Primary, Resultant, Indirect), and background details; the notes section, outside the defaults, returns every note MITRE records, such as Relationship, Maintenance, Terminology, and Research Gap notes. Explicit sections remain complete, including one oversized record with disclosure; an empty sections array requests an outline. Select examples and use exampleOffset/exampleLimit for complete source-ordered example pages. Categories are organizational entries, not vulnerability root causes.',
+    'Retrieve CWE weaknesses or categories by ID, such as CWE-79, CWE79, or 79. Processes up to 20 distinct IDs within a 24,000-byte response budget and discloses deferred IDs; a view, a CAPEC ID, or an item that is no ID returns in notFound with recovery guidance; only an item holding a control character other than whitespace, or a non-ID item over 150 characters, rejects the whole call. Defaults to summary, consequences, mitigations, and relations; a default section that does not fit the budget is omitted whole and named with its size and a re-call (kind partial). Summary carries recorded alternate terms such as XSS, ordinalities (Primary, Resultant, Indirect), and background details; the notes section, outside the defaults, returns every note MITRE records, such as Relationship, Maintenance, Terminology, and Research Gap notes. Explicit sections remain complete, including one oversized record with disclosure; an empty sections array requests an outline. exampleLanguage, exampleOffset, and exampleLimit select a complete source-ordered page of section examples: with sections omitted, setting any of them to a non-default value adds examples after the defaults, filled last and outlined with its page size and a re-call when it does not fit; explicit sections without examples ignore them, and guidance gives the re-call that adds examples. Categories are organizational entries, not vulnerability root causes.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     ids: idsSchema('CWE'),
@@ -28,20 +33,24 @@ export const cweGetWeakness = tool('cwe_get_weakness', {
       'Selected sections; omit for defaults, or pass an empty array for an outline.',
     ).optional(),
     exampleLanguage: text(
-      'Exact source example code language; discover values through cwe_list_reference topic platforms.',
+      'Exact source example code language for section examples; discover values through cwe_list_reference topic platforms. With sections omitted, adds examples to the defaults.',
     ).optional(),
     exampleOffset: z
       .number()
       .int()
       .min(0)
       .default(0)
-      .describe('Offset in each entry’s language-filtered examples.'),
+      .describe(
+        'Offset in each entry’s language-filtered examples (section examples). With sections omitted, a value above 0 adds examples to the defaults.',
+      ),
     exampleLimit: z
       .number()
       .int()
       .min(1)
-      .default(3)
-      .describe('Complete examples per entry; no upper bound beyond the finite source array.'),
+      .default(DEFAULT_EXAMPLE_LIMIT)
+      .describe(
+        'Complete examples per entry in section examples; no upper bound beyond the finite source array. With sections omitted, a value other than 3 adds examples to the defaults.',
+      ),
   }),
   output: batchOutput(weaknessEntrySchema),
   enrichment: {

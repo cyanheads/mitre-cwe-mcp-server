@@ -52,6 +52,7 @@ function snapshot(ids: readonly number[] = [1, 2, 3, 4]) {
     counts: {},
     loadedAt: '2026-10-20T00:00:00Z',
     nextCheckAt: '2026-10-21T00:00:00Z',
+    source: 'upstream',
     sourceUrl: 'https://example.test',
   };
   const entries: Weakness[] = ids.map((id) => ({

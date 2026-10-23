@@ -94,6 +94,12 @@ function sectionSize(fields: Record<string, unknown>): number {
   );
 }
 /**
+ * The selected page of a paged section. Its fields stand in for the raw section in the entry and
+ * in its outline size; `recall` names the parameters that select this page (empty when they all
+ * hold their defaults), for every re-call text that requests the section.
+ */
+type SectionPage = { section: string; fields: Record<string, unknown>; recall: string };
+/**
  * Project the selected sections of one record. `omitted` names selected sections left out to fit
  * the response budget (a `partial` entry); `undefined` asks for an identity outline instead.
  */
@@ -103,10 +109,16 @@ function project(
   sections: readonly string[],
   omitted: readonly string[] | undefined,
   toolName: 'cwe_get_weakness' | 'cwe_get_attack_pattern',
+  page?: SectionPage,
 ) {
-  const fieldsOf = (section: string) => pick(entry, groups[section] ?? []);
+  const rawFieldsOf = (section: string) => pick(entry, groups[section] ?? []);
+  const fieldsOf = (section: string) =>
+    section === page?.section ? page.fields : rawFieldsOf(section);
+  /** The page, when its parameters belong in a re-call that requests `requested`. */
+  const recalledPage = (requested: readonly string[]) =>
+    page?.recall && requested.includes(page.section) ? page : undefined;
   const availableSections = Object.keys(groups).filter(
-    (section) => Object.keys(fieldsOf(section)).length > 0,
+    (section) => Object.keys(rawFieldsOf(section)).length > 0,
   );
   const identity = {
     id: entry.id,
@@ -122,19 +134,22 @@ function project(
   };
   const sized = (list: readonly string[]) =>
     list.map((section) => ({ section, sizeInBytes: sectionSize(fieldsOf(section)) }));
-  if (sections.length === 0 || omitted === undefined)
+  if (sections.length === 0 || omitted === undefined) {
+    const paged = recalledPage(availableSections);
     return {
       ...identity,
       kind: 'outline' as const,
       outline: sized(availableSections),
-      notice: `Repeat ${toolName} with this ID and explicit sections, one section at a time for large records.`,
+      notice: `Repeat ${toolName} with this ID and explicit sections, one section at a time for large records${paged ? `; add ${paged.recall} when selecting ${paged.section}` : ''}.`,
     };
+  }
   const absent = sections.filter((section) => !availableSections.includes(section));
+  const paged = recalledPage(omitted);
   const notice = [
     absent.length &&
       `The source entry has no content for these selected sections: ${absent.join(', ')}.`,
     omitted.length &&
-      `Omitted to fit the 24,000-byte response budget: ${omitted.join(', ')}. Repeat ${toolName} with this ID and sections ${JSON.stringify(omitted)}.`,
+      `Omitted to fit the 24,000-byte response budget: ${omitted.join(', ')}. Repeat ${toolName} with this ID and sections ${JSON.stringify(omitted)}${paged ? `, ${paged.recall}` : ''}.`,
   ]
     .filter(Boolean)
     .join(' ');
@@ -219,6 +234,8 @@ function resolveDetails<S extends object, T extends Projected>(
     fill: boolean;
     project: (source: S, omitted: readonly string[] | undefined) => T;
     toolName: string;
+    /** A call-level sentence closing the batch guidance, measured with every candidate response. */
+    callGuidance?: string | undefined;
   },
 ): DetailBatch<T> {
   const size = (result: DetailBatch<T>) => deliveredSize(result, detailEnrichment(result));
@@ -267,6 +284,7 @@ function resolveDetails<S extends object, T extends Projected>(
           : 'One complete selected record and its metadata exceed the 24,000-byte response budget; returned intact to preserve forward progress.'),
       deferredIds.length > 0 &&
         `Repeat ${options.toolName} with deferredIds to retrieve the remaining entries.`,
+      options.callGuidance,
     ]
       .filter(Boolean)
       .join(' ');
@@ -293,7 +311,14 @@ function resolveDetails<S extends object, T extends Projected>(
 }
 /** NVD's placeholders for a vulnerability it could not map to a CWE entry. */
 const NVD_PLACEHOLDER = /^NVD-CWE-(?:noinfo|Other)$/i;
-/** Resolve CWE batches from one captured catalog snapshot. */
+/** The `exampleLimit` default; any other value puts the example parameters in effect. */
+export const DEFAULT_EXAMPLE_LIMIT = 3;
+/**
+ * Resolve CWE batches from one captured catalog snapshot. Example parameters in effect (a language,
+ * an offset above 0, or a limit other than the default) add `examples` to a default selection, last
+ * in fill order; an explicit selection without `examples` stays unchanged and the batch guidance
+ * gives the re-call that applies them.
+ */
 export function getWeaknessDetails(
   snapshot: CatalogSnapshot,
   input: {
@@ -309,11 +334,58 @@ export function getWeaknessDetails(
   const language = languageInput
     ? resolveVocabulary(snapshot, 'exampleLanguages', 'exampleLanguage', languageInput)
     : undefined;
-  const sections = input.sections ?? ['summary', 'consequences', 'mitigations', 'relations'];
+  const { exampleOffset: offset, exampleLimit: limit } = input;
+  /** The example parameters in effect, as a re-call names them; empty when none is. */
+  const exampleArgs = [
+    language !== undefined && `exampleLanguage ${JSON.stringify(language)}`,
+    offset > 0 && `exampleOffset ${offset}`,
+    limit !== DEFAULT_EXAMPLE_LIMIT && `exampleLimit ${limit}`,
+  ]
+    .filter(Boolean)
+    .join(', ');
+  const sections = input.sections ?? [
+    'summary',
+    'consequences',
+    'mitigations',
+    'relations',
+    ...(exampleArgs ? ['examples'] : []),
+  ];
+  const selectsExamples = sections.includes('examples');
+  /**
+   * The language-filtered example page the parameters select; with `plain`, the default page that a
+   * re-call naming no example parameter returns, which an outline of unselected examples reports.
+   */
+  const examplePage = (source: NonNullable<Weakness['examples']>, plain = false) => {
+    const lang = plain ? undefined : language;
+    const start = plain ? 0 : offset;
+    const examples = source.filter(
+      (example) =>
+        !lang ||
+        example.blocks.some(
+          (block) => block.kind === 'code' && block.language?.toLowerCase() === lang.toLowerCase(),
+        ),
+    );
+    const selected = examples.slice(start, start + (plain ? DEFAULT_EXAMPLE_LIMIT : limit));
+    const next = start + selected.length;
+    return {
+      examples: selected,
+      examplePage: {
+        total: examples.length,
+        shown: selected.length,
+        offset: start,
+        hasMore: next < examples.length,
+        ...(next < examples.length ? { nextOffset: next } : {}),
+      },
+    };
+  };
   return resolveDetails(batch, snapshot.provenance, {
     toolName: 'cwe_get_weakness',
     family: 'CWE',
     fill: input.sections === undefined,
+    callGuidance:
+      exampleArgs && !selectsExamples
+        ? `The example parameters (${exampleArgs}) apply only to section examples, which the selected sections exclude. Repeat cwe_get_weakness with sections ${JSON.stringify([...sections, 'examples'])} to apply them.`
+        : undefined,
     lookup: (id) => snapshot.cwe.weaknesses.get(id),
     miss: ({ id, family }): Miss => {
       if (family === undefined)
@@ -339,33 +411,21 @@ export function getWeaknessDetails(
           : 'Call cwe_search_weaknesses to find an existing CWE ID, then repeat cwe_get_weakness.',
       };
     },
-    project: (source, omitted) => {
-      const projected = project(source, cweFields, sections, omitted, 'cwe_get_weakness');
-      if ('examples' in projected && source.examples !== undefined) {
-        const examples = source.examples.filter(
-          (example) =>
-            !language ||
-            example.blocks.some(
-              (block) =>
-                block.kind === 'code' && block.language?.toLowerCase() === language.toLowerCase(),
-            ),
-        );
-        const offset = input.exampleOffset;
-        const selected = examples.slice(offset, offset + input.exampleLimit);
-        const next = offset + selected.length;
-        Object.assign(projected, {
-          examples: selected,
-          examplePage: {
-            total: examples.length,
-            shown: selected.length,
-            offset,
-            hasMore: next < examples.length,
-            ...(next < examples.length ? { nextOffset: next } : {}),
-          },
-        });
-      }
-      return weaknessEntrySchema.parse(projected);
-    },
+    project: (source, omitted) =>
+      weaknessEntrySchema.parse(
+        project(
+          source,
+          cweFields,
+          sections,
+          omitted,
+          'cwe_get_weakness',
+          source.examples === undefined
+            ? undefined
+            : selectsExamples
+              ? { section: 'examples', fields: examplePage(source.examples), recall: exampleArgs }
+              : { section: 'examples', fields: examplePage(source.examples, true), recall: '' },
+        ),
+      ),
   });
 }
 /** Default CAPEC sections per record type: categories and views carry no attack mechanics. */

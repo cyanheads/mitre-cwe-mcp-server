@@ -15,9 +15,11 @@ import type {
   CweCatalog,
   Member,
   SearchText,
+  TaxonomyMapping,
   Weakness,
 } from './types.js';
 import { compileViewFilter } from './view-filter.js';
+import { collapse } from './xml-normalization.js';
 
 /** Hide mutable Map methods, including from JavaScript consumers. */
 function readonlyMap<K, V>(source: ReadonlyMap<K, V>): ReadonlyMap<K, V> {
@@ -105,6 +107,7 @@ export function buildCatalogSnapshot(
   const addVocabulary = (key: string, values: readonly (string | undefined)[]) => {
     for (const value of values) if (value !== undefined) append(vocabulary, key, value);
   };
+  const categoryStatuses = new Set<string>();
   const addChild = (viewId: string, parent: string, child: string) => {
     let view = childrenByView.get(viewId);
     if (!view) {
@@ -133,11 +136,15 @@ export function buildCatalogSnapshot(
         : {}),
     };
     weaknesses.set(id, freeze(entry));
-    addVocabulary('cweStatuses', [entry.status]);
     if (entry.type === 'weakness') {
+      addVocabulary('cweStatuses', [entry.status]);
       addVocabulary('cweAbstractions', [entry.abstraction]);
       addVocabulary('cweMappingUsages', [entry.mappingNotes?.usage]);
-    }
+      addVocabulary(
+        'cweTaxonomyNames',
+        entry.taxonomyMappings?.map((mapping) => mapping.taxonomy) ?? [],
+      );
+    } else categoryStatuses.add(entry.status);
     addVocabulary('consequenceImpacts', entry.consequences?.flatMap((item) => item.impacts) ?? []);
     addVocabulary('mitigationPhases', entry.mitigations?.flatMap((item) => item.phases) ?? []);
     addVocabulary(
@@ -154,6 +161,12 @@ export function buildCatalogSnapshot(
     }
     for (const member of entry.members ?? []) addChild(member.viewId, entry.id, member.id);
   }
+  // Statuses only categories carry resolve as filter values but are never listed.
+  const weaknessStatuses = vocabulary.get('cweStatuses') ?? [];
+  addVocabulary(
+    CATEGORY_ONLY_STATUSES,
+    [...categoryStatuses].filter((status) => !weaknessStatuses.includes(status)),
+  );
   for (const [id, source] of capec.attackPatterns) {
     const entry: AttackPattern = {
       ...source,
@@ -262,6 +275,7 @@ export const REFERENCE_VOCABULARIES = {
     'consequenceImpacts',
     'cweStatuses',
     'cweMappingUsages',
+    'cweTaxonomyNames',
     'capecStatuses',
     'capecSeverities',
     'capecLikelihoods',
@@ -270,6 +284,8 @@ export const REFERENCE_VOCABULARIES = {
 /** A loaded vocabulary that a reference topic lists. */
 export type VocabularyKey =
   (typeof REFERENCE_VOCABULARIES)[keyof typeof REFERENCE_VOCABULARIES][number];
+/** The unlisted vocabulary of CWE statuses that categories carry and no weakness does. */
+const CATEGORY_ONLY_STATUSES = 'cweCategoryOnlyStatuses';
 /** Vocabularies this short are listed in full in an `unknown_filter` message. */
 const LISTED_VOCABULARY = 10;
 
@@ -304,6 +320,24 @@ export function resolveVocabulary(
       value,
       ...(listed ? { supported } : {}),
     },
+  );
+}
+
+/** CWE statuses that occur on categories and on no weakness, which search therefore never matches. */
+export function categoryOnlyStatuses(snapshot: CatalogSnapshot): readonly string[] {
+  return snapshot.vocabulary.get(CATEGORY_ONLY_STATUSES) ?? [];
+}
+
+/**
+ * Resolve a CWE status filter. A status that only categories carry is accepted, since search
+ * excludes categories and an empty result is the correct answer, but it is never listed, so an
+ * unknown status lists only the statuses weaknesses carry.
+ */
+export function resolveWeaknessStatus(snapshot: CatalogSnapshot, value: string): string {
+  const normalized = value.trim().toLowerCase();
+  return (
+    categoryOnlyStatuses(snapshot).find((status) => status.toLowerCase() === normalized) ??
+    resolveVocabulary(snapshot, 'cweStatuses', 'status', value)
   );
 }
 
@@ -358,7 +392,10 @@ export interface WeaknessFilters {
   filter?: string;
   language?: string;
   mappingUsage?: string;
+  observedCveId?: string;
   status?: string;
+  taxonomyEntryId?: string;
+  taxonomyName?: string;
   technology?: string;
   viewId?: string;
 }
@@ -379,9 +416,59 @@ function compareIds(a: { id: string }, b: { id: string }): number {
 function tokens(filter: string | undefined): string[] {
   return filter?.trim().toLowerCase().split(/\s+/).filter(Boolean) ?? [];
 }
-function containsAll(value: string, terms: readonly string[]): boolean {
-  const lower = value.toLowerCase();
-  return terms.every((term) => lower.includes(term));
+/**
+ * At `lastIndex`, a word start: a letter or digit after any other character, or a camelCase hump,
+ * an uppercase letter after a lowercase one or between an uppercase and a lowercase one.
+ */
+const WORD_START =
+  /(?<![\p{L}\p{N}])(?=[\p{L}\p{N}])|(?<=\p{Ll})(?=\p{Lu})|(?<=\p{Lu})(?=\p{Lu}\p{Ll})/uy;
+/** The next word start at or after `lastIndex`. */
+const NEXT_WORD_START = new RegExp(WORD_START.source, 'gu');
+/** At `lastIndex`, a digit. */
+const DIGIT = /\p{N}/uy;
+const WORD_LED = /^[\p{L}\p{N}]/u;
+const DIGIT_ENDED = /\p{N}$/u;
+function holdsAt(pattern: RegExp, text: string, index: number): boolean {
+  pattern.lastIndex = index;
+  return pattern.test(text);
+}
+
+/**
+ * The filter-token test that every text filter shares, bound to one text. A lowercased token
+ * starting with a letter or digit matches only at a word start: the text start, after any other
+ * character (`_` included), or at a camelCase hump in the original-case text (`dos` in ReDoS, `path`
+ * in XPath). A token ending in a digit never matches before a digit (`79` skips RFC 793). A token
+ * starting with punctuation (`.net`, `"<script>"`) matches anywhere. The search is literal, with
+ * one-character boundary tests beside it and no pattern built from the token. After a rejected
+ * occurrence it resumes at the next word start, so each run of word characters is passed once.
+ */
+export function tokenMatcher(text: string): (token: string) => boolean {
+  /**
+   * Lowercase with every code unit at its source position, so a boundary test reads the original
+   * case at a match. U+0130 is the one character whose lowercase is longer (i + U+0307): it folds
+   * to i here, and its lowercase folds to i in the token.
+   */
+  const folded = text.toLowerCase();
+  const lower =
+    folded.length === text.length ? folded : text.replaceAll('\u0130', 'i').toLowerCase();
+  return (raw) => {
+    const token = raw.replaceAll('i\u0307', 'i');
+    let index = lower.indexOf(token);
+    if (index === -1 || !WORD_LED.test(token)) return index !== -1;
+    const digitEnded = DIGIT_ENDED.test(token);
+    while (index !== -1) {
+      if (
+        holdsAt(WORD_START, text, index) &&
+        !(digitEnded && holdsAt(DIGIT, text, index + token.length))
+      )
+        return true;
+      NEXT_WORD_START.lastIndex = index + 1;
+      const next = NEXT_WORD_START.exec(text);
+      if (!next) return false;
+      index = lower.indexOf(token, next.index);
+    }
+    return false;
+  };
 }
 /** A record's plain-text search projection, which every searched record has. */
 function projection(entry: { id: string }, texts: ReadonlyMap<string, SearchText>): SearchText {
@@ -399,10 +486,10 @@ function searchedText(entry: { name: string }, text: SearchText): string {
   ].join('\n');
 }
 /**
- * Match every filter token against the name and the record's search projection: tier 0 when the
- * name or one alternate term holds every token, 1 when the description does, 2 when they are spread
- * across the searched fields, and undefined when a token is absent. A name token plus a token from
- * an unrelated term is a spread match, never tier 0.
+ * Match every filter token (`tokenMatcher`) against the name and the record's search projection:
+ * tier 0 when the name or one alternate term holds every token, 1 when the description does, 2 when
+ * they are spread across the searched fields, and undefined when a token is absent. A name token
+ * plus a token from an unrelated term is a spread match, never tier 0.
  */
 function matchTier(
   entry: { id: string; name: string },
@@ -411,12 +498,10 @@ function matchTier(
 ): number | undefined {
   if (!filterTokens.length) return 0;
   const text = projection(entry, texts);
-  if (!containsAll(searchedText(entry, text), filterTokens)) return undefined;
-  if (
-    [entry.name, ...(text.alternateTerms ?? [])].some((title) => containsAll(title, filterTokens))
-  )
-    return 0;
-  return containsAll(text.description, filterTokens) ? 1 : 2;
+  const matchesAll = (value: string) => filterTokens.every(tokenMatcher(value));
+  if (!matchesAll(searchedText(entry, text))) return undefined;
+  if ([entry.name, ...(text.alternateTerms ?? [])].some(matchesAll)) return 0;
+  return matchesAll(text.description) ? 1 : 2;
 }
 /** Deprecated and Obsolete patterns, which CAPEC search excludes unless asked to include them. */
 function inactive(entry: AttackPattern): boolean {
@@ -442,12 +527,60 @@ function canonical(
   return value?.trim() ? resolveVocabulary(snapshot, key, field, value) : undefined;
 }
 
+/** One observed example a weakness records. */
+type ObservedExample = NonNullable<Weakness['observedExamples']>[number];
+/**
+ * The recorded-evidence tests of one weakness search, resolved once: a taxonomy mapping test when
+ * `taxonomyName` or `taxonomyEntryId` applies, both holding on the same mapping, and an observed
+ * example test when `observedCveId` applies. The name resolves through `cweTaxonomyNames`; the
+ * Entry_ID compares case-insensitively in the trimmed, whitespace-collapsed form it is stored in;
+ * the CVE compares uppercased with the recorded reference.
+ */
+export function evidenceMatchers(
+  snapshot: CatalogSnapshot,
+  filters: WeaknessFilters,
+): {
+  mapping?: (mapping: TaxonomyMapping) => boolean;
+  example?: (example: ObservedExample) => boolean;
+} {
+  const taxonomy = canonical(snapshot, 'cweTaxonomyNames', 'taxonomyName', filters.taxonomyName);
+  const entryId = filters.taxonomyEntryId?.trim()
+    ? collapse(filters.taxonomyEntryId).toLowerCase()
+    : undefined;
+  const cve = filters.observedCveId?.trim().toUpperCase() || undefined;
+  return {
+    ...(taxonomy || entryId
+      ? {
+          mapping: (mapping: TaxonomyMapping) =>
+            (!taxonomy || mapping.taxonomy === taxonomy) &&
+            (!entryId || mapping.id?.toLowerCase() === entryId),
+        }
+      : {}),
+    ...(cve ? { example: (example: ObservedExample) => example.reference === cve } : {}),
+  };
+}
+/**
+ * The Entry_ID spelling a weakness mapping records for a `taxonomyEntryId` filter, matched as the
+ * search matches it, or the trimmed, whitespace-collapsed value when no weakness records it.
+ */
+export function recordedEntryId(snapshot: CatalogSnapshot, value: string): string {
+  const id = collapse(value);
+  const folded = id.toLowerCase();
+  for (const entry of snapshot.cwe.weaknesses.values())
+    if (entry.type === 'weakness')
+      for (const mapping of entry.taxonomyMappings ?? [])
+        if (mapping.id?.toLowerCase() === folded) return mapping.id;
+  return id;
+}
+
 /** Search weaknesses, preserving deterministic documented ordering over all matches. */
 export function searchWeaknesses(snapshot: CatalogSnapshot, filters: WeaknessFilters): Weakness[] {
   const language = canonical(snapshot, 'languages', 'language', filters.language);
   const technology = canonical(snapshot, 'technologies', 'technology', filters.technology);
   const abstraction = canonical(snapshot, 'cweAbstractions', 'abstraction', filters.abstraction);
-  const status = canonical(snapshot, 'cweStatuses', 'status', filters.status);
+  const status = filters.status?.trim()
+    ? resolveWeaknessStatus(snapshot, filters.status)
+    : undefined;
   const mappingUsage = canonical(
     snapshot,
     'cweMappingUsages',
@@ -460,6 +593,7 @@ export function searchWeaknesses(snapshot: CatalogSnapshot, filters: WeaknessFil
     'consequenceImpact',
     filters.consequenceImpact,
   );
+  const { mapping, example } = evidenceMatchers(snapshot, filters);
   const scope = filters.viewId ? weaknessesInView(snapshot, filters.viewId) : undefined;
   const terms = tokens(filters.filter);
   return ranked(
@@ -467,6 +601,8 @@ export function searchWeaknesses(snapshot: CatalogSnapshot, filters: WeaknessFil
       if (
         entry.type !== 'weakness' ||
         (scope && !scope.has(entry.id)) ||
+        (mapping && !entry.taxonomyMappings?.some(mapping)) ||
+        (example && !entry.observedExamples?.some(example)) ||
         (abstraction && entry.abstraction !== abstraction) ||
         (status && entry.status !== status) ||
         (mappingUsage && entry.mappingNotes?.usage !== mappingUsage) ||
@@ -515,8 +651,9 @@ export function searchAttackPatterns(
 /**
  * Whether one token of a text filter matches, on its own, a weakness or a pattern the inactive
  * setting admits. When none does, no subset of the tokens matches either, so a zero-hit notice
- * suggests fewer terms only when this holds. One pass that lowercases each record once and stops at
- * the first match.
+ * suggests fewer terms only when this holds. Tokens match as the search matches them
+ * (`tokenMatcher`), so one that occurs only inside words counts as unmatched. One pass that
+ * lowercases each record once and stops at the first match.
  */
 export function someTokenMatches(
   snapshot: CatalogSnapshot,
@@ -532,8 +669,7 @@ export function someTokenMatches(
           (entry) => includeInactive || !inactive(entry),
         );
   const texts = snapshot[catalog].searchText;
-  return records.some((entry) => {
-    const searched = searchedText(entry, projection(entry, texts)).toLowerCase();
-    return terms.some((term) => searched.includes(term));
-  });
+  return records.some((entry) =>
+    terms.some(tokenMatcher(searchedText(entry, projection(entry, texts)))),
+  );
 }

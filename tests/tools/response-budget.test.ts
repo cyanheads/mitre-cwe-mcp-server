@@ -198,6 +198,77 @@ describe('complete delivered response budget', () => {
     },
   );
 
+  it('counts matched taxonomy mappings and observed examples toward the page budget and lists each weakness once', async () => {
+    // Six repeated-ID mappings and two citations of one CVE per weakness, as on CWE-1391.
+    const mappings = Array.from(
+      { length: 6 },
+      (_, j) =>
+        `<Taxonomy_Mapping Taxonomy_Name="ISA/IEC 62443"><Entry_ID>Part 4-2</Entry_ID><Entry_Name>Req CR ${j}.1 ${'requirement '.repeat(8)}</Entry_Name></Taxonomy_Mapping>`,
+    ).join('');
+    const examples = Array.from(
+      { length: 2 },
+      (_, j) =>
+        `<Observed_Example><Reference>CVE-2021-44228</Reference><Description>Citation ${j}: ${'evaluates lookups '.repeat(25)}</Description><Link>https://www.cve.org/CVERecord?id=CVE-2021-44228</Link></Observed_Example>`,
+    ).join('');
+    await serve(
+      Array.from(
+        { length: 40 },
+        (_, i) =>
+          `<Weakness ID="${i + 1}" Name="Known ${i + 1}" Status="Stable" Abstraction="Base"><Description>Short.</Description><Observed_Examples>${examples}</Observed_Examples><Taxonomy_Mappings>${mappings}</Taxonomy_Mappings></Weakness>`,
+      ).join(''),
+      '<View ID="1000" Name="View" Type="Graph" Status="Stable"><Objective>View.</Objective><Members/></View>',
+      '<Attack_Pattern ID="1" Name="Pattern 1" Status="Stable" Abstraction="Standard"><Description>Short.</Description></Attack_Pattern>',
+    );
+    // Without the filters a default page holds all 20 rows, cut by count alone.
+    const plain = await runToolContract(cweSearchWeaknesses, {});
+    bounded(plain);
+    expect(plain.structuredContent).toMatchObject({ pagination: { shown: 20 }, truncated: true });
+    expect(plain.structuredContent).not.toHaveProperty('notice');
+    // Each matched entry renders one line opening with its own text: `> Req CR` or `> Citation`.
+    for (const [args, field, perRow, opening] of [
+      [
+        { taxonomyName: 'isa/iec 62443', taxonomyEntryId: 'PART 4-2' },
+        'matchedTaxonomyMappings',
+        6,
+        '> Req CR ',
+      ],
+      [{ observedCveId: 'cve-2021-44228' }, 'matchedObservedExamples', 2, '> Citation '],
+    ] as const) {
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        const wire = await runToolContract(cweSearchWeaknesses, { ...args, cursor });
+        bounded(wire);
+        const data = wire.structuredContent as Page & {
+          results: Record<string, unknown[]>[];
+          notice?: string;
+        };
+        const rows = data.results;
+        expect(data.pagination.total).toBe(40);
+        expect(rows.length).toBeGreaterThan(0);
+        // The matched entries, not the count limit, cut every page short of the 20-row default.
+        if (data.pagination.hasMore) {
+          expect(rows.length).toBeLessThan(20);
+          expect(data.notice).toBe(
+            'The 24,000-byte response budget reduced this page; follow nextCursor for the remainder.',
+          );
+          disclosed(wire);
+        }
+        for (const row of rows) expect(row[field]).toHaveLength(perRow);
+        expect(lines(wire).filter((line) => line === `**${field}**`)).toHaveLength(rows.length);
+        expect(lines(wire).filter((line) => line.startsWith(opening))).toHaveLength(
+          rows.length * perRow,
+        );
+        seen.push(...rows.map((row) => String(row.id)));
+        cursor = data.pagination.nextCursor;
+        pages++;
+      } while (cursor);
+      expect(pages, field).toBeGreaterThan(2);
+      expect(seen).toEqual(Array.from({ length: 40 }, (_, i) => `CWE-${i + 1}`));
+    }
+  });
+
   it('pages direct view members by bytes while retaining source order and complete names', async () => {
     const name = '界'.repeat(150);
     await load('Small objective.', 35, name, true);
@@ -330,6 +401,35 @@ describe('complete delivered response budget', () => {
     });
     expect(JSON.stringify(wire.content)).toContain(description);
     disclosed(wire);
+  });
+
+  it('measures the example-parameter guidance of an explicit selection beside deferred IDs', async () => {
+    // Three summaries fit with fewer bytes to spare than the sentence costs on both surfaces.
+    await load('é'.repeat(1680));
+    const ids = Array.from({ length: 20 }, (_, i) => String(i + 1));
+    const plain = await runToolContract(cweGetWeakness, { ids, sections: ['summary'] });
+    boundedBuilds();
+    bounded(plain);
+    const sentence =
+      'The example parameters (exampleOffset 2) apply only to section examples, which the selected sections exclude. Repeat cwe_get_weakness with sections ["summary","examples"] to apply them.';
+    expect(budget - bytes(plain)).toBeLessThan(2 * Buffer.byteLength(sentence));
+    expect((plain.structuredContent as Batch).entries).toHaveLength(3);
+    const wire = await runToolContract(cweGetWeakness, {
+      ids,
+      sections: ['summary'],
+      exampleOffset: 2,
+    });
+    boundedBuilds();
+    bounded(wire);
+    disclosed(wire);
+    const data = wire.structuredContent as Batch & { guidance: string };
+    expect(data.guidance).toBe(
+      `The 24,000-byte response budget deferred whole identifiers. Repeat cwe_get_weakness with deferredIds to retrieve the remaining entries. ${sentence}`,
+    );
+    expect(lines(wire)).toContain(`> ${data.guidance}`);
+    // The sentence is measured with the batch, so it costs a whole deferred ID.
+    expect(data.entries.map((entry) => entry.id)).toEqual(['CWE-1', 'CWE-2']);
+    expect(data.deferredIds).toEqual(ids.slice(2).map((id) => `CWE-${id}`));
   });
 
   it('returns one oversized list item intact and advances to the next item', async () => {

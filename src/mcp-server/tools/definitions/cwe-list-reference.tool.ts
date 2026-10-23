@@ -9,6 +9,7 @@ import {
   escapeMarkdown,
   getCatalogService,
   REFERENCE_VOCABULARIES,
+  tokenMatcher,
 } from '@/services/index.js';
 import {
   catalogEnrichmentTrailer,
@@ -62,6 +63,14 @@ const healthSchema = z
       .record(text('Record family.'), z.number().int().describe('Loaded record count.'))
       .describe('Counts by family.'),
     nextCheckAt: text('Next refresh check.'),
+    source: z
+      .enum(['cache', 'upstream'])
+      .describe(
+        'Where the served catalog came from: cache is a saved copy loaded at start and not downloaded again since; upstream is a download by this server process.',
+      ),
+    fetchedAt: text(
+      'When the served catalog was downloaded from MITRE; absent for a cached copy with no matching download record.',
+    ).optional(),
     lastCheckAt: text('Last attempted check.').optional(),
     lastSuccessfulCheckAt: text('Last successful check.').optional(),
     etag: text('Source ETag.').optional(),
@@ -122,7 +131,7 @@ function referenceItems(
         key: 'root-cause',
         label: 'CVE → CWE root cause',
         description:
-          'Search weaknesses, then use cwe_get_weakness for descriptions, mapping notes, and mitigations. Categories and views organize records and are not vulnerability root causes.',
+          'Search weaknesses by text, or with observedCveId for the weaknesses MITRE cites a CVE on as an observed example (absence does not mean no weakness applies), then use cwe_get_weakness for descriptions, mapping notes, and mitigations. Categories and views organize records and are not vulnerability root causes.',
       },
       {
         key: 'mechanics',
@@ -181,22 +190,24 @@ function referenceNotice(
   filter: string | undefined,
 ): string {
   if (!all.length || !filter) return `Topic ${topic} lists no items in the loaded catalogs.`;
+  const labels = all.map((item) => tokenMatcher(item.label));
   const fewer =
-    filter.includes(' ') &&
-    filter.split(' ').some((term) => all.some((item) => item.label.toLowerCase().includes(term)));
+    filter.includes(' ') && filter.split(' ').some((term) => labels.some((has) => has(term)));
   return `No reference item matched ${filterPhrase(filter, 'the filter')}. Repeat cwe_list_reference ${fewer ? 'with fewer terms, or ' : ''}without filter to list every item in topic ${topic}.`;
 }
 /** Discover catalog vocabulary and health with explicit continuation. */
 export const cweListReference = tool('cwe_list_reference', {
   title: 'List CWE and CAPEC reference values',
   description:
-    'List loaded CWE/CAPEC vocabulary, every CWE view, workflow guidance, or catalog versions and refresh health. Filter requires every whitespace-separated token in an item label; omit filter to browse. Platforms distinguishes example code languages from platform names and classes. Follow nextCursor for complete lists; limits above 100 are capped with disclosure.',
+    'List loaded CWE/CAPEC vocabulary, every CWE view, workflow guidance, or catalog versions and refresh health. Filter requires every whitespace-separated token in an item label, each at a word start or camelCase hump (script finds JavaScript); omit filter to browse. Platforms distinguishes example code languages from platform names and classes. Follow nextCursor for complete lists; limits above 100 are capped with disclosure.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     topic: inputEnum(referenceTopics).describe(
-      'views lists CWE view IDs; abstraction_levels explains CWE and CAPEC levels; mitigation_phases lists prevention phases; platforms lists platform dimensions and exampleLanguages; relationship_natures lists relation labels; filter_values lists statuses, consequence impacts, CWE mapping usage, severity, and likelihood; workflow explains navigation; versions reports catalog freshness and refresh health.',
+      'views lists CWE view IDs; abstraction_levels explains CWE and CAPEC levels; mitigation_phases lists prevention phases; platforms lists platform dimensions and exampleLanguages; relationship_natures lists relation labels; filter_values lists statuses, consequence impacts, CWE mapping usage, CWE taxonomy names, severity, and likelihood; workflow explains navigation; versions reports catalog freshness and refresh health.',
     ),
-    filter: filterSchema('All-token case-insensitive label filter; blank means unset.'),
+    filter: filterSchema(
+      'All-token case-insensitive label filter; each token matches at a word start or camelCase hump, never inside a word. Blank means unset.',
+    ),
     ...pagingShape,
   }),
   output: z.object({
@@ -235,9 +246,7 @@ export const cweListReference = tool('cwe_list_reference', {
     const filter = normalizeFilter(input.filter);
     const terms = filter?.split(' ') ?? [];
     const all = referenceItems(snapshot, input.topic);
-    const items = all.filter((item) =>
-      terms.every((term) => item.label.toLowerCase().includes(term)),
-    );
+    const items = all.filter((item) => terms.every(tokenMatcher(item.label)));
     const { output, enrichment } = pageResponse(items, input, {
       binding: ['cwe_list_reference', input.topic, filter ?? null],
       provenance: snapshot.provenance,

@@ -7,6 +7,12 @@
     "source": "github"
   },
   "version": "0.1.2",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mitre-cwe.caseyjhand.com/mcp"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",
@@ -21,6 +27,12 @@
           "format": "string",
           "isRequired": false,
           "default": "info"
+        },
+        {
+          "name": "CWE_CACHE_DIR",
+          "description": "Directory for the last good MITRE catalog downloads, loaded at start without waiting on MITRE. Defaults to mitre-cwe-mcp-server under the user cache directory.",
+          "format": "string",
+          "isRequired": false
         }
       ],
       "transport": {
@@ -74,6 +86,12 @@
           "format": "string",
           "isRequired": false,
           "default": "info"
+        },
+        {
+          "name": "CWE_CACHE_DIR",
+          "description": "Directory for the last good MITRE catalog downloads, loaded at start without waiting on MITRE. Defaults to mitre-cwe-mcp-server under the user cache directory.",
+          "format": "string",
+          "isRequired": false
         }
       ],
       "transport": {

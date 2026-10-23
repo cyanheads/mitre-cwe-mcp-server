@@ -40,7 +40,7 @@ export const Mark = {
 } as const;
 
 /** CommonMark's Unicode whitespace that every implementation also treats as whitespace. */
-function isWhitespace(character: string | undefined): boolean {
+export function isWhitespace(character: string | undefined): boolean {
   if (character === undefined) return false;
   return (
     character === ' ' ||
@@ -231,7 +231,7 @@ export function escapeMarkdown(value: string, marks?: Uint8Array): string {
     lineStart = end + 1;
   }
   const definitions = definitionStarts(value, labelStarts, markAt, outside);
-  const candidates = /[\\`*_[\]<&|]/g;
+  const candidates = /[\\`*_[\]<&|!]/g;
   let candidate = candidates.exec(value);
   let lineCursor = 0;
   let blockCursor = 0;
@@ -289,6 +289,10 @@ export function escapeMarkdown(value: string, marks?: Uint8Array): string {
         break;
       case '|':
         needsEscape ||= (mark & Mark.tableCell) !== 0;
+        break;
+      // Before a generated link's `[`, a source `!` would turn the link into an image.
+      case '!':
+        needsEscape ||= next === '[' && !(markAt(index + 1) & Mark.text);
         break;
     }
     if (needsEscape) {

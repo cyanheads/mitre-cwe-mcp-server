@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
+  exampleCodeText,
   type OrderedNode,
   orderedContentToMarkdown,
   parseCapecCatalog,
@@ -81,7 +82,7 @@ describe('parseCweCatalog', () => {
     });
   });
 
-  it('keeps alternating prose and code, source indices, indentation and CDATA literal', () => {
+  it('keeps alternating prose and code, source indices, indentation, CDATA literal and example references', () => {
     expect(parseCweCatalog(cweXml).weaknesses.get('CWE-79')?.examples).toEqual([
       {
         index: 0,
@@ -91,15 +92,173 @@ describe('parseCweCatalog', () => {
             kind: 'code',
             language: 'C',
             nature: 'Bad',
-            text: 'if (a < b) {\n  call("x");\n}\nnext();',
+            text: 'if (a < b) {\n    call("x");\n}\nnext();',
           },
           { kind: 'prose', text: 'Between code.' },
           { kind: 'code', text: '  literal <tag> &amp;\n    next();' },
           { kind: 'prose', text: 'After code.' },
         ],
+        references: [
+          {
+            id: 'REF-2',
+            authors: ['Carol'],
+            title: 'Example source',
+            url: 'https://example.test/example-source',
+            section: 'Figure 3',
+          },
+        ],
       },
       { index: 1, blocks: [{ kind: 'prose', text: 'Second example.' }] },
     ]);
+  });
+
+  it('turns an example’s References into its references, never a prose block', () => {
+    const xml = cweXml.replace(
+      '<Reference External_Reference_ID="REF-2" Section="Figure 3"/>',
+      '<Reference External_Reference_ID="REF-2"/><Reference External_Reference_ID="REF-404"/>',
+    );
+    const [first] = parseCweCatalog(xml).weaknesses.get('CWE-79')?.examples ?? [];
+    expect(first?.blocks.map(({ kind }) => kind)).toEqual([
+      'prose',
+      'code',
+      'prose',
+      'code',
+      'prose',
+    ]);
+    expect(first?.references).toEqual([
+      {
+        id: 'REF-2',
+        authors: ['Carol'],
+        title: 'Example source',
+        url: 'https://example.test/example-source',
+      },
+      { id: 'REF-404' },
+    ]);
+  });
+
+  describe('example code layout', () => {
+    /** CWE-79's first code block after replacing its source XML content. */
+    function code(content: string): string | undefined {
+      const xml = cweXml.replace(
+        /(<Example_Code Nature="Bad" Language="C">)[\s\S]*?(<\/Example_Code>)/,
+        (_match, open: string, close: string) => `${open}${content}${close}`,
+      );
+      const block = parseCweCatalog(xml).weaknesses.get('CWE-79')?.examples?.[0]?.blocks[1];
+      return block?.kind === 'code' ? block.text : undefined;
+    }
+    const margin = (content: string) =>
+      `<xhtml:div style="margin-left:1em;">${content}</xhtml:div>`;
+
+    it('folds ASCII whitespace runs to one space and drops them at line ends, keeping U+00A0', () => {
+      expect(code('\n\t\t\t  a  \t b\r\n\t\t c\n\t')).toBe('a b c');
+      // XML forbids a literal form feed, so it reaches the layout only from another tree.
+      expect(exampleCodeText([textNode('\f a\f\fb \f')])).toBe('a b');
+      expect(
+        code('<xhtml:div>\n\t  x =&#160;&#160;1;  </xhtml:div>\n\t<xhtml:div>&#160;y</xhtml:div>'),
+      ).toBe('x =  1;\n y');
+    });
+
+    it('ends a line at each break, leaving blank lines between consecutive breaks', () => {
+      expect(code('a<xhtml:br/><xhtml:br/>b<xhtml:br/>\n   c')).toBe('a\n\nb\nc');
+      // A break that is a block's last content adds no line.
+      expect(code('<xhtml:div>a<xhtml:br/></xhtml:div><xhtml:div>b<xhtml:br/></xhtml:div>c')).toBe(
+        'a\nb\nc',
+      );
+      expect(code('<xhtml:div>a<xhtml:br/><xhtml:br/></xhtml:div>b')).toBe('a\n\nb');
+    });
+
+    it('starts and ends a line at each block without adding blank lines', () => {
+      expect(code('x<xhtml:div>y</xhtml:div>z<xhtml:p>p</xhtml:p><xhtml:div></xhtml:div>w')).toBe(
+        'x\ny\nz\np\nw',
+      );
+      expect(
+        code(
+          `<xhtml:div>if (str1 == str2) {${margin('System.out.println(&quot;str1 == str2&quot;);')}}</xhtml:div>`,
+        ),
+      ).toBe('if (str1 == str2) {\n    System.out.println("str1 == str2");\n}');
+    });
+
+    it('writes list items as lines with their marker', () => {
+      expect(
+        code(
+          '<xhtml:ul>\n <xhtml:li>one</xhtml:li> <xhtml:li>two <xhtml:b>bold</xhtml:b></xhtml:li></xhtml:ul><xhtml:ol><xhtml:li>first</xhtml:li><xhtml:li></xhtml:li><xhtml:li>third</xhtml:li></xhtml:ol>after',
+        ),
+      ).toBe('- one\n- two bold\n1. first\n2.\n3. third\nafter');
+    });
+
+    it('indents 4 spaces for each enclosing margin-left div, at any depth', () => {
+      // Seven levels, the deepest CWE 4.20 nests (CWE-1221).
+      const nest = (level: number): string =>
+        level > 7 ? '' : margin(`L${level} {${nest(level + 1)}}`);
+      const pad = (level: number) => ' '.repeat(4 * level);
+      expect(code(nest(1))?.split('\n')).toEqual([
+        `${pad(1)}L1 {`,
+        `${pad(2)}L2 {`,
+        `${pad(3)}L3 {`,
+        `${pad(4)}L4 {`,
+        `${pad(5)}L5 {`,
+        `${pad(6)}L6 {`,
+        `${pad(7)}L7 {}`,
+        `${pad(6)}}`,
+        `${pad(5)}}`,
+        `${pad(4)}}`,
+        `${pad(3)}}`,
+        `${pad(2)}}`,
+        `${pad(1)}}`,
+      ]);
+      expect(
+        code(
+          `${margin('<xhtml:table><xhtml:tr><xhtml:th>A</xhtml:th></xhtml:tr><xhtml:tr><xhtml:td>1</xhtml:td></xhtml:tr></xhtml:table>')}<xhtml:div style="color: red">flat</xhtml:div><xhtml:div style="padding: 0; MARGIN-LEFT: 2em">in</xhtml:div>`,
+        ),
+      ).toBe('    | A |\n    | --- |\n    | 1 |\nflat\n    in');
+    });
+
+    it('trims leading and trailing blank lines and writes no line ending in whitespace', () => {
+      const text = code('<xhtml:br/>\n\t<xhtml:br/>  a \t<xhtml:br/>  <xhtml:br/>\n<xhtml:br/>');
+      expect(text).toBe('a');
+      expect(code(margin('<xhtml:br/>x<xhtml:br/><xhtml:br/>y'))).toBe('    x\n\n    y');
+    });
+
+    it('lays out in linear time', { timeout: 60_000 }, () => {
+      const style = { '@_style': 'margin-left:1em;' };
+      const shapes: [string, (length: number) => OrderedNode[]][] = [
+        [
+          'nested margin-left divs',
+          (length) => {
+            // One `<xhtml:div style="margin-left:1em;">` and its close tag span 48 characters.
+            let node: OrderedNode = textNode('x');
+            for (let level = 0; level < length / 48; level++) node = { ':@': style, div: [node] };
+            return [node];
+          },
+        ],
+        ['digit run', (length) => [textNode('7'.repeat(length))]],
+        ['one long line, then a break', (length) => [textNode(`${'§1 x'.repeat(length / 4)}\ny`)]],
+        ['breaks throughout', (length) => [textNode('  \r\n'.repeat(length / 4))]],
+        [
+          'hard breaks throughout',
+          (length) => Array.from({ length: length / 4 }, () => [textNode('a'), { br: [] }]).flat(),
+        ],
+        [
+          'indented lines throughout',
+          (length) =>
+            Array.from({ length: length / 48 }, () => ({ ':@': style, div: [textNode('x;')] })),
+        ],
+        [
+          'list items throughout',
+          (length) => [{ ol: Array.from({ length: length / 8 }, () => ({ li: [textNode('i')] })) }],
+        ],
+      ];
+      for (const [label, build] of shapes) expectLinearTime(label, build, exampleCodeText);
+      expectLinearTime(
+        'parse a long example',
+        (length) =>
+          cweXml.replace(
+            '<xhtml:div>next();</xhtml:div>',
+            `<xhtml:div style="margin-left:1em;">a = b;<xhtml:br/></xhtml:div>`.repeat(length / 64),
+          ),
+        parseCweCatalog,
+      );
+    });
   });
 
   it('does not invent absent optional fields', () => {
@@ -698,6 +857,37 @@ describe('catalog validation boundaries', () => {
 });
 
 describe('orderedContentToMarkdown', () => {
+  const el = (name: string, ...content: OrderedNode[]): OrderedNode => ({ [name]: content });
+  const link = (href: string, ...content: OrderedNode[]): OrderedNode => ({
+    ':@': { '@_href': href },
+    a: content,
+  });
+  const image = (src: string, alt: string): OrderedNode => ({
+    ':@': { '@_src': src, '@_alt': alt },
+    img: [],
+  });
+  /** [source, stored, visible text, node types after the document] */
+  type Case = [OrderedNode[], string, string, string[]];
+  function expectDocuments(cases: Case[]) {
+    for (const [nodes, stored, visible, types] of cases) {
+      const markdown = orderedContentToMarkdown(nodes);
+      expect(markdown).toBe(stored);
+      expect(parseMarkdown(markdown)).toEqual({ text: visible, nodes: ['document', ...types] });
+    }
+  }
+  /** Cases that convert to one paragraph, listing the node types inside it. */
+  const expectCases = (cases: Case[]) =>
+    expectDocuments(
+      cases.map(
+        ([nodes, stored, visible, inline]): Case => [
+          nodes,
+          stored,
+          visible,
+          ['paragraph', ...inline],
+        ],
+      ),
+    );
+
   it('sizes code fences beyond source delimiters and retains blank lines inside code', () => {
     expect(orderedContentToMarkdown([{ pre: [{ '#text': '  start\n\n\n    ```\n  end' }] }])).toBe(
       '````\n  start\n\n\n    ```\n  end\n````',
@@ -894,7 +1084,7 @@ describe('orderedContentToMarkdown', () => {
       '<xhtml:div>next();</xhtml:div><xhtml:table><xhtml:tr><xhtml:th>Reg</xhtml:th><xhtml:th>Bits</xhtml:th></xhtml:tr><xhtml:tr><xhtml:td>KEY_0</xhtml:td><xhtml:td>[0:31]   <xhtml:br/>key</xhtml:td></xhtml:tr></xhtml:table>',
     );
     expect(parseCweCatalog(xml).weaknesses.get('CWE-79')?.examples?.[0]?.blocks[1]?.text).toBe(
-      'if (a < b) {\n  call("x");\n}\nnext();\n| Reg | Bits |\n| --- | --- |\n| KEY_0 | [0:31] key |',
+      'if (a < b) {\n    call("x");\n}\nnext();\n| Reg | Bits |\n| --- | --- |\n| KEY_0 | [0:31] key |',
     );
   });
 
@@ -925,6 +1115,551 @@ describe('orderedContentToMarkdown', () => {
         textNode('+1'),
       ]),
     ).toBe('P(x) = x^6+x^4+1');
+  });
+
+  describe('bold and emphasis', () => {
+    it('keeps pairs CommonMark can open and close beside generated syntax and each other', () => {
+      expectCases([
+        [
+          [textNode('a '), el('b', link('https://e.test', textNode('y'))), textNode(' b')],
+          'a **[y](<https://e.test>)** b',
+          'a y b',
+          ['text', 'strong', 'link', 'text', 'text'],
+        ],
+        [
+          [textNode('a'), el('b', el('i', textNode('x'))), textNode('b')],
+          'a***x***b',
+          'axb',
+          ['text', 'emph', 'strong', 'text', 'text'],
+        ],
+        [
+          [textNode('a'), el('i', textNode('x')), el('b', textNode('y')), textNode('b')],
+          'a*x***y**b',
+          'axyb',
+          ['text', 'emph', 'text', 'strong', 'text', 'text'],
+        ],
+        [
+          [textNode('a'), el('b', textNode('x'), el('i', textNode('y'))), textNode('b')],
+          'a**x*y***b',
+          'axyb',
+          ['text', 'strong', 'text', 'emph', 'text', 'text'],
+        ],
+        [
+          [textNode('a '), el('b', textNode('x'), { br: [] }, textNode('y')), textNode(' b')],
+          'a **x  \ny** b',
+          'a x\ny b',
+          ['text', 'strong', 'text', 'linebreak', 'text', 'text'],
+        ],
+        [
+          [textNode('a'), link('https://e.test', el('b', textNode('y'))), textNode('b')],
+          'a[**y**](<https://e.test>)b',
+          'ayb',
+          ['text', 'link', 'strong', 'text', 'text'],
+        ],
+      ]);
+    });
+
+    it('drops both delimiters of a pair that cannot open or close, keeping the text', () => {
+      expectCases([
+        [
+          [textNode('a'), el('b', link('https://e.test', textNode('y'))), textNode('b')],
+          'a[y](<https://e.test>)b',
+          'ayb',
+          ['text', 'link', 'text', 'text'],
+        ],
+        [
+          [textNode('a'), el('b', el('code', textNode('c'))), textNode('b')],
+          'a` c `b',
+          'acb',
+          ['text', 'code', 'text'],
+        ],
+        [
+          [textNode('a'), el('i', image('https://e.test/x.png', 'x')), textNode('b')],
+          'a![x](<https://e.test/x.png>)b',
+          'axb',
+          ['text', 'image', 'text', 'text'],
+        ],
+        [
+          [textNode('a'), el('b', el('sup', textNode('2'))), textNode('b')],
+          'a^2b',
+          'a^2b',
+          ['text'],
+        ],
+        [
+          [textNode('a'), el('b', link('mailto:x', textNode('y'))), textNode('b')],
+          'ay (mailto:x)b',
+          'ay (mailto:x)b',
+          ['text'],
+        ],
+        [
+          [textNode('1'), el('b', el('code', textNode('c'))), textNode('2')],
+          '1` c `2',
+          '1c2',
+          ['text', 'code', 'text'],
+        ],
+        [
+          [textNode('漢'), el('i', link('https://e.test', textNode('y'))), textNode('字')],
+          '漢[y](<https://e.test>)字',
+          '漢y字',
+          ['text', 'link', 'text', 'text'],
+        ],
+      ]);
+    });
+
+    it('merges adjacent spans of one kind and adds nothing for a span inside its own kind', () => {
+      expectCases([
+        [
+          [textNode('a'), el('i', textNode('x')), el('i', textNode('y')), textNode('b')],
+          'a*xy*b',
+          'axyb',
+          ['text', 'emph', 'text', 'text'],
+        ],
+        [
+          [textNode('a '), el('i', textNode('x')), el('em', textNode('y')), textNode(' b')],
+          'a *xy* b',
+          'a xy b',
+          ['text', 'emph', 'text', 'text'],
+        ],
+        [
+          [textNode('a'), el('b', textNode('x')), el('strong', textNode('y')), textNode('b')],
+          'a**xy**b',
+          'axyb',
+          ['text', 'strong', 'text', 'text'],
+        ],
+        [
+          [
+            textNode('a'),
+            el('b', el('i', textNode('x'))),
+            el('b', el('i', textNode('y'))),
+            textNode('b'),
+          ],
+          'a***xy***b',
+          'axyb',
+          ['text', 'emph', 'strong', 'text', 'text'],
+        ],
+        [
+          [textNode('a '), el('i', el('i', textNode('x'))), textNode(' b')],
+          'a *x* b',
+          'a x b',
+          ['text', 'emph', 'text', 'text'],
+        ],
+        [
+          [
+            textNode('a '),
+            el('b', textNode('x '), el('b', textNode('y')), textNode(' z')),
+            textNode(' b'),
+          ],
+          'a **x y z** b',
+          'a x y z b',
+          ['text', 'strong', 'text', 'text'],
+        ],
+      ]);
+    });
+
+    it('drops the later span when CommonMark would pair its delimiters with another span', () => {
+      expectCases([
+        // `a**x*y****z*b` read the closing run of four as one closer and the opener of z as text.
+        [
+          [
+            textNode('a'),
+            el('b', textNode('x'), el('i', textNode('y'))),
+            el('i', textNode('z')),
+            textNode('b'),
+          ],
+          'a**x*y***zb',
+          'axyzb',
+          ['text', 'strong', 'text', 'emph', 'text', 'text'],
+        ],
+        // `a*x***y*z***b` let the opener before z close the bold.
+        [
+          [
+            textNode('a'),
+            el('i', textNode('x')),
+            el('b', textNode('y'), el('i', textNode('z'))),
+            textNode('b'),
+          ],
+          'a*x***yz**b',
+          'axyzb',
+          ['text', 'emph', 'text', 'strong', 'text', 'text'],
+        ],
+        // A run of four left open would make the bold's own closer unmatched.
+        [
+          [
+            textNode('a'),
+            el('i', textNode('w')),
+            el('b', el('i', textNode('x')), textNode('y')),
+            textNode('b'),
+          ],
+          'a*w***xy**b',
+          'awxyb',
+          ['text', 'emph', 'text', 'strong', 'text', 'text'],
+        ],
+      ]);
+    });
+
+    it('moves a hard break at an emphasis or link edge outside as a hard break', () => {
+      expectCases([
+        [
+          [textNode('a'), el('b', textNode('x'), { br: [] }), textNode('y')],
+          'a**x**  \ny',
+          'ax\ny',
+          ['text', 'strong', 'text', 'text', 'linebreak', 'text'],
+        ],
+        [
+          [textNode('a'), el('i', { br: [] }, textNode('x')), textNode('y')],
+          'a  \n*x*y',
+          'a\nxy',
+          ['text', 'linebreak', 'emph', 'text', 'text'],
+        ],
+        [
+          [textNode('a'), link('https://e.test', textNode('x'), { br: [] }), textNode('y')],
+          'a[x](<https://e.test>)  \ny',
+          'ax\ny',
+          ['text', 'link', 'text', 'text', 'linebreak', 'text'],
+        ],
+        // An inert link's address goes before the break, not after it.
+        [
+          [textNode('a'), link('mailto:x', textNode('x'), { br: [] }), textNode('b')],
+          'ax (mailto:x)  \nb',
+          'ax (mailto:x)\nb',
+          ['text', 'linebreak', 'text'],
+        ],
+      ]);
+    });
+
+    it('adds no delimiters around content that spans blocks, which CommonMark never pairs', () => {
+      const paragraphs = ['paragraph', 'text', 'paragraph', 'text'];
+      expectDocuments([
+        [
+          [textNode('a '), el('b', textNode('x'), el('p', textNode('y'))), textNode(' z')],
+          'a x\n\ny z',
+          'a x\ny z',
+          paragraphs,
+        ],
+        // Two breaks leave a blank line, which ends the paragraph.
+        [
+          [
+            textNode('a '),
+            el('i', textNode('x'), { br: [] }, { br: [] }, textNode('y')),
+            textNode(' z'),
+          ],
+          'a x  \n\ny z',
+          'a x\ny z',
+          paragraphs,
+        ],
+      ]);
+    });
+  });
+
+  describe('links, images, code, and blocks beside their neighbours', () => {
+    const code = (value: string) => el('code', textNode(value));
+    const ul = (...items: OrderedNode[][]): OrderedNode => ({
+      ul: items.map((content) => ({ li: content })),
+    });
+    const table = (...rows: OrderedNode[][][]): OrderedNode => ({
+      table: rows.map((cells) => ({ tr: cells.map((content) => ({ td: content })) })),
+    });
+
+    it('escapes a source ! before a generated link, which would otherwise read as an image', () => {
+      expectCases([
+        [
+          [textNode('see!'), link('https://e.test/', textNode('y'))],
+          'see\\![y](<https://e.test/>)',
+          'see!y',
+          ['text', 'text', 'link', 'text'],
+        ],
+        // The ! meets the link once the emphasis delimiters between them are dropped.
+        [
+          [textNode('a!'), el('i', link('https://e.test', textNode('y'))), textNode('b')],
+          'a\\![y](<https://e.test>)b',
+          'a!yb',
+          ['text', 'text', 'link', 'text', 'text'],
+        ],
+        [
+          [textNode('see!'), image('https://e.test/x.png', 'x')],
+          'see!![x](<https://e.test/x.png>)',
+          'see!x',
+          ['text', 'text', 'image', 'text'],
+        ],
+      ]);
+    });
+
+    it('merges code spans whose fences touch, which CommonMark reads as one backtick run', () => {
+      expectCases([
+        [[code('a'), code('b')], '` ab `', 'ab', ['code']],
+        [
+          [textNode('x '), code('a'), code('b'), code('c'), textNode(' y')],
+          'x ` abc ` y',
+          'x abc y',
+          ['text', 'code', 'text'],
+        ],
+        // Fences touch once the emphasis delimiters between them are dropped; kept ones separate.
+        [
+          [textNode('x'), code('a'), el('i', code('b')), textNode('y')],
+          'x` ab `y',
+          'xaby',
+          ['text', 'code', 'text'],
+        ],
+        [
+          [textNode('x '), code('a'), el('i', code('b')), textNode(' y')],
+          'x ` a `*` b `* y',
+          'x ab y',
+          ['text', 'code', 'emph', 'code', 'text'],
+        ],
+        // The joined code sizes the fence, and keeps a space that ends or starts either code.
+        [[code('a`'), code('`b')], '``` a``b ```', 'a``b', ['code']],
+        [[code(' '), code('b')], '`  b `', ' b', ['code']],
+        [[code('a'), el('sup', code('b'))], '` a `^` b `', 'a^b', ['code', 'text', 'code']],
+      ]);
+    });
+
+    it('writes no span for empty code and no padding around code of only spaces', () => {
+      expectCases([
+        [[textNode('a'), el('code'), textNode('b')], 'ab', 'ab', ['text']],
+        [[textNode('a'), code(''), textNode('b')], 'ab', 'ab', ['text']],
+        [[textNode('a'), code(' '), textNode('b')], 'a` `b', 'a b', ['text', 'code', 'text']],
+      ]);
+    });
+
+    it('renders a link as its content alone where CommonMark cannot hold one', () => {
+      const paragraphs = ['paragraph', 'text', 'paragraph', 'text'];
+      expectDocuments([
+        [
+          [link('https://e.test/', textNode('x'), el('p', textNode('y')))],
+          'x\n\ny',
+          'x\ny',
+          paragraphs,
+        ],
+        // Two breaks leave a blank line, which ends the paragraph.
+        [
+          [link('https://e.test/', textNode('x'), { br: [] }, { br: [] }, textNode('y'))],
+          'x  \n\ny',
+          'x\ny',
+          paragraphs,
+        ],
+        // Content renders as if the anchor were absent, so code inside is a code span again.
+        [
+          [link('https://e.test/', code('c'), el('p', textNode('y')))],
+          '` c `\n\ny',
+          'c\ny',
+          ['paragraph', 'code', 'paragraph', 'text'],
+        ],
+        // No link holds another, at any depth.
+        [
+          [link('https://e.test/', textNode('x'), link('https://f.test/', textNode('y')))],
+          '[xy](<https://e.test/>)',
+          'xy',
+          ['paragraph', 'link', 'text'],
+        ],
+        [
+          [
+            link(
+              'https://e.test/',
+              el('b', textNode('x '), link('https://f.test/', textNode('y'))),
+            ),
+          ],
+          '[**x y**](<https://e.test/>)',
+          'x y',
+          ['paragraph', 'link', 'strong', 'text'],
+        ],
+        [
+          [link('https://e.test/', textNode('x'), { br: [] }, textNode('y'))],
+          '[x  \ny](<https://e.test/>)',
+          'x\ny',
+          ['paragraph', 'link', 'text', 'linebreak', 'text'],
+        ],
+      ]);
+    });
+
+    it('keeps a list, preformatted block, or table on its own lines inside a span', () => {
+      const list = ['paragraph', 'text', 'list', 'item', 'paragraph', 'text', 'paragraph', 'text'];
+      expectDocuments([
+        [
+          [textNode('a '), el('b', ul([textNode('x')])), textNode(' b')],
+          'a \n\n- x\n\nb',
+          'a\nx\nb',
+          list,
+        ],
+        [
+          [textNode('a '), link('https://e.test/', ul([textNode('x')])), textNode(' b')],
+          'a \n\n- x\n\nb',
+          'a\nx\nb',
+          list,
+        ],
+        [
+          [textNode('a '), link('mailto:x', ul([textNode('x')])), textNode(' b')],
+          'a \n\n- x\n\n (mailto:x) b',
+          'a\nx\n(mailto:x) b',
+          list,
+        ],
+        // The fence pulled onto the line before read `b` as its info string.
+        [
+          [textNode('a'), el('b', el('pre', textNode('y'))), textNode('b')],
+          'a\n\n```\ny\n```\n\nb',
+          'a\ny\nb',
+          ['paragraph', 'text', 'code_block', 'paragraph', 'text'],
+        ],
+        // A paragraph between the span and the list passes the list's edge on.
+        [
+          [el('b', el('p', ul([textNode('x')])))],
+          '- x',
+          'x',
+          ['list', 'item', 'paragraph', 'text'],
+        ],
+        [
+          [textNode('a'), el('b', table([[textNode('c')]])), textNode('b')],
+          'a\n\n| c |\n| --- |\n\nb',
+          'a\n| c |\n| --- |\nb',
+          ['paragraph', 'text', 'paragraph', 'text', 'softbreak', 'text', 'paragraph', 'text'],
+        ],
+      ]);
+    });
+
+    it('keeps only the text of a list or table in a cell, and shows preformatted text as code', () => {
+      const row = ['paragraph', 'text', 'softbreak', 'text'];
+      expectDocuments([
+        [
+          [table([[ul([textNode('x')], [textNode('y')])]])],
+          '| x y |\n| --- |',
+          '| x y |\n| --- |',
+          row,
+        ],
+        [[table([[{ li: [textNode('x')] }]])], '| x |\n| --- |', '| x |\n| --- |', row],
+        [
+          [table([[table([[textNode('c')], [textNode('d')]])]])],
+          '| c d |\n| --- |',
+          '| c d |\n| --- |',
+          row,
+        ],
+        [
+          [table([[code('a'), el('pre', textNode('y'))]])],
+          '| ` a ` ` y ` |\n| --- |',
+          '| a y |\n| --- |',
+          ['paragraph', 'text', 'code', 'text', 'code', 'text', 'softbreak', 'text'],
+        ],
+      ]);
+    });
+
+    it('never shows generated syntax as text or changes the visible text', () => {
+      const word = fc.constantFrom(
+        'a',
+        '7',
+        ' ',
+        '.',
+        '*',
+        '_',
+        '\\',
+        '漢',
+        '(',
+        ')',
+        '[',
+        ']',
+        '!',
+        '`',
+      );
+      const text = fc.string({ unit: word, minLength: 1, maxLength: 3 }).map(textNode);
+      const codeText = fc.constantFrom('c', '', ' ', '`', 'a b', '``x', ' c ');
+      // `inline` trees hold no block; `node` trees add paragraphs, preformatted text, tables, lists.
+      const { node } = fc.letrec<{ inline: OrderedNode; node: OrderedNode }>((tie) => {
+        const nodes = (kind: 'inline' | 'node', maxLength: number) =>
+          fc.array(tie(kind), { maxLength });
+        const shapes = (kind: 'inline' | 'node') => [
+          text,
+          fc.constant<OrderedNode>({ br: [] }),
+          fc.constantFrom('x', '', ']').map((alt) => image('https://e.test/x.png', alt)),
+          codeText.map(code),
+          nodes(kind, 3).map((content) => el('sup', ...content)),
+          nodes(kind, 4).map((content) => el('b', ...content)),
+          nodes(kind, 4).map((content) => el('i', ...content)),
+          nodes(kind, 3).map((content) => el('strong', ...content)),
+          fc
+            .tuple(fc.constantFrom('https://e.test/', 'mailto:x'), nodes(kind, 3))
+            .map(([href, content]) => link(href, ...content)),
+        ];
+        const cells = fc.tuple(nodes('node', 2), nodes('node', 2));
+        return {
+          inline: fc.oneof({ depthSize: 'small', withCrossShrink: true }, ...shapes('inline')),
+          node: fc.oneof(
+            { depthSize: 'small', withCrossShrink: true },
+            ...shapes('node'),
+            nodes('node', 3).map((content) => el('p', ...content)),
+            codeText.map((value) => el('pre', textNode(value))),
+            fc.array(cells, { minLength: 1, maxLength: 2 }).map((rows) => table(...rows)),
+            // An item led by text: a nested list whose first item is empty puts three markers on
+            // one line, which CommonMark reads as a thematic break, a list layout case of its own.
+            fc
+              .array(nodes('node', 2), { minLength: 1, maxLength: 2 })
+              .map((items) => ul(...items.map((content) => [textNode('a'), ...content]))),
+          ),
+        };
+      });
+      const key = (item: OrderedNode) =>
+        Object.keys(item).find((name) => name !== ':@' && !name.startsWith('#'));
+      // An inert link's address follows its content's last visible character, so the whitespace
+      // around it depends on what ends the content; both sides fold it to single spaces.
+      const fold = (value: string) =>
+        value
+          .replace(/\s*\(mailto:x\)\s*/g, ' (mailto:x) ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      const codeOf = (content: readonly OrderedNode[]) =>
+        content.map((item) => item['#text']).join('');
+      /** What a reader of the source sees, before whitespace folding. */
+      const source = (nodes: readonly OrderedNode[], cell = false): string =>
+        nodes
+          .map((item) => {
+            const name = key(item);
+            if (!name) return item['#text'] as string;
+            const content = item[name] as OrderedNode[];
+            const attributes = item[':@'] as Record<string, string> | undefined;
+            switch (name) {
+              case 'br':
+                return '\n';
+              case 'img':
+                return attributes?.['@_alt'] ?? '';
+              case 'code':
+                return codeOf(content);
+              case 'pre':
+                return `\n${codeOf(content)}\n`;
+              case 'p':
+                return `\n${source(content, cell)}\n`;
+              case 'sup':
+                return `^${source(content, cell)}`;
+              case 'ul':
+                return content
+                  .map((entry) => `\n${source(entry.li as OrderedNode[], cell)}\n`)
+                  .join('');
+              case 'table': {
+                const rows = content.map((row) =>
+                  (row.tr as OrderedNode[]).map((entry) => source(entry.td as OrderedNode[], true)),
+                );
+                // A table in a cell keeps only its cells' text.
+                if (cell)
+                  return rows
+                    .flat()
+                    .map((entry) => ` ${entry} `)
+                    .join('');
+                const lines = rows.map((cells) => `| ${cells.map(fold).join(' | ')} |`);
+                return `\n${[lines[0], '| --- | --- |', ...lines.slice(1)].join('\n')}\n`;
+              }
+              case 'a':
+                return attributes?.['@_href'] === 'mailto:x'
+                  ? `${source(content, cell)} (mailto:x)`
+                  : source(content, cell);
+              default:
+                return source(content, cell);
+            }
+          })
+          .join('');
+      fc.assert(
+        fc.property(fc.array(node, { maxLength: 6 }), (nodes) => {
+          const markdown = orderedContentToMarkdown(nodes);
+          expect(fold(parseMarkdown(markdown).text)).toBe(fold(source(nodes)));
+          expect(referenceDefinitions(markdown)).toEqual([]);
+        }),
+        { seed: 20261022, numRuns: 4000 },
+      );
+    });
   });
 
   it('continues an ordered item at its marker width so later blocks stay inside it', () => {
@@ -975,6 +1710,41 @@ describe('orderedContentToMarkdown', () => {
         'hard breaks throughout',
         (length) => Array.from({ length: length / 4 }, () => [textNode('a'), { br: [] }]).flat(),
       ],
+      [
+        'adjacent spans of one kind',
+        (length) => [
+          textNode('a'),
+          ...Array.from({ length: length / 3 }, () => ({ i: [textNode('x')] })),
+          textNode('b'),
+        ],
+      ],
+      [
+        'alternating kinds side by side',
+        (length) =>
+          Array.from({ length: length / 7 }, () => [
+            { i: [textNode('x')] },
+            { b: [textNode('y')] },
+          ]).flat(),
+      ],
+      [
+        'nested emphasis openers side by side',
+        (length) =>
+          Array.from({ length: length / 7 }, () => ({
+            b: [{ i: [textNode('x')] }, textNode('y')],
+          })),
+      ],
+      [
+        'spans the pass drops',
+        (length) =>
+          Array.from({ length: length / 10 }, () => [
+            { b: [textNode('x'), { i: [textNode('y')] }] },
+            { i: [textNode('z')] },
+          ]).flat(),
+      ],
+      [
+        'emphasis ending in a break',
+        (length) => Array.from({ length: length / 7 }, () => ({ b: [textNode('x'), { br: [] }] })),
+      ],
     ];
     for (const [label, build] of shapes) expectLinearTime(label, build, orderedContentToMarkdown);
     expectLinearTime(
@@ -983,5 +1753,73 @@ describe('orderedContentToMarkdown', () => {
         cweXml.replace('Sparse description.', 'a <xhtml:b>b_c</xhtml:b> 1. '.repeat(length / 28)),
       parseCweCatalog,
     );
+  });
+
+  it('converts links, code, and blocks beside their neighbours in linear time', {
+    timeout: 60_000,
+  }, () => {
+    const code = (value: string) => el('code', textNode(value));
+    const anchor = (...content: OrderedNode[]) => link('https://e.test/', ...content);
+    const nest = (depth: number, inside: OrderedNode): OrderedNode =>
+      depth ? anchor(nest(depth - 1, inside)) : inside;
+    const shapes: [string, (length: number) => OrderedNode[]][] = [
+      [
+        'one long line of links, then a break',
+        (length) => [
+          ...Array.from({ length: length / 25 }, () => anchor(textNode('§1 x'))),
+          { br: [] },
+          textNode('y'),
+        ],
+      ],
+      // Code of only spaces, all touching: one span the merge pass builds whole.
+      [
+        'breaks throughout code spans',
+        (length) => Array.from({ length: length / 4 }, () => code('  \r\n')),
+      ],
+      ['adjacent code spans', (length) => Array.from({ length: length / 6 }, () => code('ab'))],
+      [
+        'code spans joined by dropped emphasis',
+        (length) =>
+          Array.from({ length: length / 16 }, () => [
+            textNode('x'),
+            code('a'),
+            { i: [code('b')] },
+            textNode('y'),
+          ]).flat(),
+      ],
+      [
+        'exclamation marks before links',
+        (length) =>
+          Array.from({ length: length / 24 }, () => [textNode('!'), anchor(textNode('y'))]).flat(),
+      ],
+      [
+        'links whose content crosses blocks',
+        (length) =>
+          Array.from({ length: length / 7 }, () =>
+            anchor(textNode('x'), { br: [] }, { br: [] }, textNode('y')),
+          ),
+      ],
+      // Each group is six anchors, whose source runs past 150 characters.
+      [
+        'nested links around a paragraph',
+        (length) => Array.from({ length: length / 40 }, () => nest(6, { p: [textNode('x')] })),
+      ],
+      [
+        'lists inside emphasis',
+        (length) =>
+          Array.from({ length: length / 6 }, () => ({ b: [{ ul: [{ li: [textNode('x')] }] }] })),
+      ],
+      [
+        'lists in table cells',
+        (length) => [
+          {
+            table: Array.from({ length: length / 12 }, () => ({
+              tr: [{ td: [{ ul: [{ li: [textNode('x')] }, { li: [textNode('y')] }] }] }],
+            })),
+          },
+        ],
+      ],
+    ];
+    for (const [label, build] of shapes) expectLinearTime(label, build, orderedContentToMarkdown);
   });
 });
