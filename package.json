@@ -87,7 +87,7 @@
     "url": "git+https://github.com/cyanheads/mitre-cwe-mcp-server.git"
   },
   "license": "Apache-2.0",
-  "packageManager": "bun@1.4.3",
+  "packageManager": "bun@1.4.4",
   "engines": {
     "bun": ">=1.4.0",
     "node": ">=24.0.0"
@@ -112,7 +112,7 @@
     "commonmark": "0.31.2",
     "depcheck": "^1.4.7",
     "fast-check": "^4.10.2",
-    "ignore": "^7.0.12",
+    "ignore": "^7.0.13",
     "tsc-alias": "^1.9.8",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
