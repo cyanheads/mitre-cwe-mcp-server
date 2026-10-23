@@ -13,9 +13,9 @@
 
 ## Catalog contracts
 
-Seven read-only tools expose CWE and CAPEC. No resources, prompts, server-specific environment variables, or Cloudflare Workers entrypoint are registered. Read `docs/design.md` and the actual definitions before extending the surface.
+Seven read-only tools expose CWE and CAPEC. No resources, prompts, or Cloudflare Workers entrypoint are registered; the one server-specific environment variable is the optional `CWE_CACHE_DIR` (`src/config/server-config.ts`). Read `docs/design.md` and the actual definitions before extending the surface.
 
-`CatalogService` loads both XML sources in `setup()` before serving. Catalog snapshots are shared public data held only in memory; no persistent catalog cache or bundled dataset exists. CWE refresh checks run every 24 hours, CAPEC every seven days. Failed refreshes retain the last good snapshot and disclose sanitized health through `cwe_list_reference` topic `versions`.
+`CatalogService` loads both XML sources in `setup()` before serving. Catalog snapshots are shared public data held in memory. Each successful download is also saved as raw bytes plus a JSON sidecar in the cache directory, and a later start loads a usable cached copy without a request, then checks MITRE right after start. A `CatalogService` built without `cacheDir` reads and writes no files, so tests stay hermetic; only `setup()` passes one. No bundled dataset exists. CWE refresh checks run every 24 hours, CAPEC every seven days; a cache-loaded catalog with no successful check yet retries after 5, 10, 20, 40, then every 60 minutes. Failed refreshes retain the last good snapshot and disclose sanitized health, including `source` (`cache` | `upstream`) and `fetchedAt`, through `cwe_list_reference` topic `versions`. Cache I/O never fails startup or a refresh.
 
 Ordinary responses target 24,000 serialized bytes including enrichment. Defer whole IDs or page items; never truncate only the rendered surface. Default detail selections omit whole sections that do not fit (`kind: 'partial'`, filled per record in declared order) and become outlines only when no section fits, while explicit selected sections and example pages remain complete. One complete oversized record or item can exceed the budget with disclosure. Preserve every selected value in both `content[]` and `structuredContent`.
 
@@ -215,13 +215,18 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 ```text
 src/
   index.ts                              # createApp() entry point
+  config/
+    server-config.ts                    # CWE_CACHE_DIR and default cache directory
   services/
     index.ts                            # Public service exports
     catalog/
       acquisition.ts                    # Fixed-source HTTP and ZIP handling
+      catalog-cache.ts                  # Last-known-good downloads and sidecars
       catalog-service.ts                # Initial load and refresh lifecycle
       catalog-index.ts                  # Indexes and local search
       hierarchy-service.ts              # Live hierarchy traversal
+      markdown-escape.ts                # Render-boundary Markdown escaping
+      view-filter.ts                    # View filter evaluation
       xml-normalization.ts              # Ordered source content
       types.ts                          # Catalog domain types
   mcp-server/
@@ -369,7 +374,7 @@ security: false                            # optional — true ONLY for a source
 
 **Every release goes through a release PR** — `git-wrapup`'s "Release PR mode", mode `straight-through`. One release agent runs `git-wrapup` then `release-and-publish`: create `release/<version>`, commit and push the release stack, open a PR, read checks and bot comments, then fast-forward `main` locally with `git merge --ff-only`. Never merge through the GitHub UI or `gh pr merge`; never squash, rebase, force-push, or rewrite pushed commits. Verify the branch before every commit.
 
-Publish to npm, the MCP Registry, GHCR, and GitHub Releases with the `.mcpb` bundle. The npm identity is `@cyanheads/mitre-cwe-mcp-server`; the registry identity is `io.github.cyanheads/mitre-cwe-mcp-server`; display identity, Docker image, and bundle name are `mitre-cwe-mcp-server`. Use the `release-and-publish` skill's image build with `APP_VERSION` and absolute Dockerfile/context paths. This repository has no hosted endpoint.
+Publish to npm, the MCP Registry, GHCR, and GitHub Releases with the `.mcpb` bundle. The npm identity is `@cyanheads/mitre-cwe-mcp-server`; the registry identity is `io.github.cyanheads/mitre-cwe-mcp-server`; display identity, Docker image, and bundle name are `mitre-cwe-mcp-server`. Use the `release-and-publish` skill's image build with `APP_VERSION` and absolute Dockerfile/context paths. The public hosted endpoint is `https://mitre-cwe.caseyjhand.com/mcp` (`server.json` `remotes`).
 
 ---
 

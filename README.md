@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/mitre-cwe-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/mitre-cwe-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/mitre-cwe-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/mitre-cwe-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/mitre-cwe-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/mitre-cwe-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -16,6 +16,12 @@
 [![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/cyanheads/mitre-cwe-mcp-server/releases/latest/download/mitre-cwe-mcp-server.mcpb) [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=mitre-cwe-mcp-server&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBjeWFuaGVhZHMvbWl0cmUtY3dlLW1jcC1zZXJ2ZXIiXX0=) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22mitre-cwe-mcp-server%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40cyanheads%2Fmitre-cwe-mcp-server%22%5D%7D)
 
 [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-67E8F9?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
+
+</div>
+
+<div align="center">
+
+**Public Hosted Server:** [https://mitre-cwe.caseyjhand.com/mcp](https://mitre-cwe.caseyjhand.com/mcp)
 
 </div>
 
@@ -32,7 +38,7 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 | `cwe_list_reference` | Discover views, filter vocabulary, workflow guidance, and catalog refresh health |
 | `cwe_get_weakness` | Retrieve CWE weaknesses or categories with selected sections and complete example pages |
 | `cwe_get_attack_pattern` | Retrieve CAPEC attack patterns, categories, and views: prerequisites, execution steps, mitigations, members, and recorded mappings |
-| `cwe_search_weaknesses` | Search weaknesses by text, platform, abstraction, consequences, status, mapping usage, or view |
+| `cwe_search_weaknesses` | Search weaknesses by text, platform, abstraction, consequences, status, mapping usage, view, taxonomy mapping (CERT C `ARR30-C`), or observed-example CVE |
 | `cwe_search_attack_patterns` | Search CAPEC by text, CWE or ATT&CK mapping, abstraction, severity, or likelihood |
 | `cwe_get_view` | Read a CWE view's metadata and direct members in published order |
 | `cwe_get_hierarchy` | Traverse live CWE parents, children, ancestors, or descendants within a view |
@@ -41,9 +47,9 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 
 ### `cwe_list_reference` <sub>tool</sub>
 
-- `topic`: `views`, `abstraction_levels`, `mitigation_phases`, `platforms`, `relationship_natures`, `filter_values`, `workflow`, or `versions`; optional all-token `filter` on labels
+- `topic`: `views`, `abstraction_levels`, `mitigation_phases`, `platforms`, `relationship_natures`, `filter_values`, `workflow`, or `versions`; optional all-token `filter` on labels, each token at a word start or camelCase hump (`script` finds JavaScript)
 - `views` lists every CWE view with its direct member count, and a filter-defined view's `filterDefinition`
-- `filter_values` lists CWE statuses and mapping usage, consequence impacts, and CAPEC statuses, severity, and likelihood
+- `filter_values` lists weakness statuses, mapping usage, and taxonomy names, consequence impacts, and CAPEC statuses, severity, and likelihood
 - Lists page with `limit` (default 20, max 100) and `pagination.nextCursor`; `versions` adds each loaded catalog's version, date, counts, and refresh errors
 
 ---
@@ -54,7 +60,7 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 - `sections`: `summary`, `consequences`, `mitigations`, `relations`, `examples`, `detection`, `observed`, `platforms`, `mappings`, `notes` (default: the first four); `[]` returns an outline
 - `summary` includes recorded alternate terms (`XSS`), ordinalities (Primary, Resultant, Indirect), and background details, `platforms` adds functional areas and affected resources, and `relations` names each related weakness. `notes` returns every note MITRE records for weaknesses and categories, such as Relationship, Maintenance, Terminology, and Research Gap notes
 - `entries[].kind` is `full`, `partial` (default sections that did not fit the response budget are listed in `outline` with their sizes, and `notice` gives the re-call), or `outline`; `notFound[].reason` is `not_found`, `wrong_type` (a view, which belongs to `cwe_get_view`, or a prefixed ID of the other catalog), or `invalid_id` (an item that is no ID, echoed trimmed; `NVD-CWE-noinfo` and `NVD-CWE-Other` get their own guidance). Categories resolve here
-- Examples filter by `exampleLanguage` and page with `exampleOffset` (default 0), `exampleLimit` (default 3, no fixed cap), and `examplePage.nextOffset`; each example keeps its ordered prose and code
+- Examples filter by `exampleLanguage` and page with `exampleOffset` (default 0), `exampleLimit` (default 3, no fixed cap), and `examplePage.nextOffset`. With `sections` omitted, setting any of the three to a non-default value adds `examples` after the defaults (outlined with its page size and a re-call when it does not fit); explicit `sections` without `examples` ignore them, and `guidance` gives the re-call that adds `examples`. Each example keeps its ordered prose and code, with code laid out as MITRE's pages show it (4 spaces per indentation level), and lists the references it cites in `references`
 
 ---
 
@@ -70,8 +76,10 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 
 ### `cwe_search_weaknesses` <sub>tool</sub>
 
-- Optional all-token `filter` over the name, MITRE's recorded alternate terms (`XSS`, `ReDoS`, `UAF`), the description, and the extended description, plus exact `language`, `technology`, `abstraction`, `consequenceImpact`, `status`, `mappingUsage`, and `viewId`; no filters browses the catalog
+- Optional all-token `filter` over the name, MITRE's recorded alternate terms (`XSS`, `ReDoS`, `UAF`), the description, and the extended description, plus exact `language`, `technology`, `abstraction`, `consequenceImpact`, `status`, `mappingUsage`, `taxonomyName`, `taxonomyEntryId`, `observedCveId`, and `viewId`; no filters browses the catalog
+- A `filter` token matches at a word start, after `_`, or at a camelCase hump (`dos` finds ReDoS), never inside a word: `serialization` does not find CWE-502, `deserialization` does, and `trusted` does not find untrusted. A token ending in a digit never matches before another digit (`79` skips RFC 793)
 - Each result carries MITRE's `mappingUsage`, such as `Allowed`, `Allowed-with-Review`, or `Prohibited`, which says whether the entry may be used to map a vulnerability
+- `taxonomyName` (such as `CERT C Secure Coding` or `ISA/IEC 62443`) and `taxonomyEntryId` (such as `ARR30-C` or `A1`, any case) find the weaknesses that record a taxonomy mapping, both holding on one mapping when given together; `observedCveId` (such as `CVE-2021-44228`) finds the weaknesses MITRE cites that CVE on as an observed example, not NVD's CVE-to-CWE assignments. Each result then lists every mapping (`matchedTaxonomyMappings`) or observed example (`matchedObservedExamples`) that matched
 - `viewId` includes same-view membership closure, or for a filter-defined view the weaknesses its source XPath filter selects (CWE-658 C, CWE-702 Implementation, …). Categories are excluded; every status is included by default
 - Ranked by all tokens in the name or in one alternate term, then in the description, then any other match, then numeric ID; previews hold the first sentence, and `cwe_get_weakness` returns the terms in `summary`. `limit` default 20, max 100; continue with `pagination.nextCursor`
 
@@ -79,7 +87,7 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 
 ### `cwe_search_attack_patterns` <sub>tool</sub>
 
-- Optional all-token `filter` over the name, recorded alternate terms (`MITM`), and the description, plus `cweId`, `attackTechniqueId`, `abstraction`, `severity`, and `likelihood`; CWE mappings match exactly, and a parent ATT&CK technique includes its recorded subtechniques
+- Optional all-token `filter` over the name, recorded alternate terms (`MITM`), and the description, each token matched at a word start as in `cwe_search_weaknesses`, plus `cweId`, `attackTechniqueId`, `abstraction`, `severity`, and `likelihood`; CWE mappings match exactly, and a parent ATT&CK technique includes its recorded subtechniques
 - `includeInactive` (default `false`) adds Deprecated and Obsolete patterns. Ranked by all tokens in the name or in one alternate term, then in the description, then any other match, then numeric ID; `cwe_get_attack_pattern` returns the terms in `summary`. `limit` default 20, max 100; continue with `pagination.nextCursor`
 
 ---
@@ -105,8 +113,8 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 MITRE-specific:
 
-- No API key. Both XML catalogs load into memory before the server accepts requests, so every start needs MITRE's CWE and CAPEC download sources; there is no disk cache or bundled copy
-- CWE checks for a new version every 24 hours and CAPEC refreshes weekly; a failed refresh keeps the loaded data and shows in `cwe_list_reference` topic `versions`
+- No API key. Both XML catalogs load into memory before the server accepts requests. Each successful download is saved to a cache directory (`CWE_CACHE_DIR`), and a later start loads the saved copy without waiting on MITRE, so a restart works while MITRE is unreachable. The first start, or any start without a usable saved copy, needs MITRE's CWE and CAPEC download sources
+- CWE checks for a new version every 24 hours and CAPEC refreshes weekly; a catalog loaded from the cache is checked right after start and, while those checks fail, again after 5, 10, 20, 40, then every 60 minutes. A failed refresh keeps the loaded data and shows in `cwe_list_reference` topic `versions`, which also reports whether each catalog came from the cache or a download
 - MITRE can refuse a burst of requests from one address with HTTP 403 for a few minutes. Catalog downloads, version checks, and hierarchy calls report it as a temporary, retryable failure and do not retry it immediately
 - Hierarchy calls go to the live CWE REST API and keep multiple parents and view identity; search and detail run against the local catalogs
 - MITRE statuses and absent sections stay explicit. CAPEC mappings and execution flows are incomplete: a missing mapping does not establish that no relationship exists, or that an ATT&CK ID is current
@@ -120,6 +128,23 @@ Agent-friendly output:
 - `content[]` and `structuredContent` carry the same values, ordered example code included. Catalog prose and code are reference data, never instructions
 
 ## Getting started
+
+### Public Hosted Instance
+
+A public instance is available at `https://mitre-cwe.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+
+```json
+{
+  "mcpServers": {
+    "mitre-cwe-mcp-server": {
+      "type": "streamable-http",
+      "url": "https://mitre-cwe.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+### Self-Hosted / Local
 
 Add the following to your MCP client configuration file.
 
@@ -159,11 +184,13 @@ Or with Docker:
     "mitre-cwe-mcp-server": {
       "type": "stdio",
       "command": "docker",
-      "args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/mitre-cwe-mcp-server:latest"]
+      "args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "-v", "mitre-cwe-cache:/usr/src/app/.cache", "ghcr.io/cyanheads/mitre-cwe-mcp-server:latest"]
     }
   }
 }
 ```
+
+The named volume keeps the catalog cache across `--rm` containers, so a later start does not need MITRE.
 
 For Streamable HTTP, set the transport and start the server:
 
@@ -175,7 +202,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 ### Prerequisites
 
 - [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-- Outbound HTTPS access to `cwe.mitre.org` and `capec.mitre.org` for initial catalogs, and `cwe-api.mitre.org` for version checks and live hierarchy calls.
+- Outbound HTTPS access to `cwe.mitre.org` and `capec.mitre.org` for catalog downloads (at least once, to fill the cache), and `cwe-api.mitre.org` for version checks and live hierarchy calls.
 
 ### Installation
 
@@ -206,10 +233,11 @@ cp .env.example .env
 
 ## Configuration
 
-No server-specific environment variables are required. Catalog sources, refresh intervals, and response limits are fixed; framework storage settings do not persist these catalogs.
+No environment variables are required. Catalog sources, refresh intervals, and response limits are fixed; framework storage settings do not persist these catalogs.
 
 | Variable | Description | Default |
 |:---|:---|:---|
+| `CWE_CACHE_DIR` | Directory for the last good CWE and CAPEC downloads (`cwec_latest.xml.zip`, `capec_latest.xml`, each with a `.json` record). A relative path resolves against the working directory. To seed an empty cache while MITRE is unreachable, copy downloaded files in under those names. | `mitre-cwe-mcp-server` under the user cache directory (`~/Library/Caches`, `%LOCALAPPDATA%`, or `$XDG_CACHE_HOME` / `~/.cache`); `/usr/src/app/.cache` in Docker |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
 | `MCP_HTTP_HOST` | HTTP bind address. | `127.0.0.1` |
@@ -250,7 +278,8 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 |:---|:---|
 | `src/mcp-server/tools/definitions` | Seven read-only tools. |
 | `src/mcp-server/tools` | Shared output schemas, section projection, budgets, and pagination. |
-| `src/services/catalog` | Catalog acquisition, XML normalization, indexes, refresh lifecycle, and live hierarchy. |
+| `src/config` | Server environment configuration (`CWE_CACHE_DIR`). |
+| `src/services/catalog` | Catalog acquisition, the last-known-good cache, XML normalization, indexes, refresh lifecycle, and live hierarchy. |
 | `tests/` | Unit and integration tests, mirroring the `src/` structure. |
 | `docs/` | Design and generated directory reference. |
 
