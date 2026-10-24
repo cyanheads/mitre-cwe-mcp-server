@@ -122,6 +122,14 @@ export const cweGetHierarchy = tool('cwe_get_hierarchy', {
   enrichmentTrailer: catalogEnrichmentTrailer,
   errors: [
     {
+      reason: 'hierarchy_timeout',
+      code: JsonRpcErrorCode.Timeout,
+      when: 'The total hierarchy deadline expires during queue wait or an active traversal.',
+      recovery: HIERARCHY_RECOVERY,
+      retryable: true,
+      thrownBy: 'service',
+    },
+    {
       reason: 'invalid_hierarchy_options',
       code: JsonRpcErrorCode.ValidationError,
       when: 'viewId names no CWE view, or primaryOnly is true outside ancestors; the message names each.',

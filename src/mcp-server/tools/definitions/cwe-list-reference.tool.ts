@@ -199,14 +199,14 @@ function referenceNotice(
 export const cweListReference = tool('cwe_list_reference', {
   title: 'List CWE and CAPEC reference values',
   description:
-    'List loaded CWE/CAPEC vocabulary, every CWE view, workflow guidance, or catalog versions and refresh health. Filter requires every whitespace-separated token in an item label, each at a word start or camelCase hump (script finds JavaScript); omit filter to browse. Platforms distinguishes example code languages from platform names and classes. Follow nextCursor for complete lists; limits above 100 are capped with disclosure.',
+    'List loaded CWE/CAPEC vocabulary, every CWE view, workflow guidance, or catalog versions and refresh health. Filter requires every whitespace-separated token in an item label, each at a word start or camelCase hump (script finds JavaScript). Tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start; spelling coincidences can match. Omit filter to browse. Platforms distinguishes example code languages from platform names and classes. Follow nextCursor for complete lists; limits above 100 are capped with disclosure.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     topic: inputEnum(referenceTopics).describe(
       'views lists CWE view IDs; abstraction_levels explains CWE and CAPEC levels; mitigation_phases lists prevention phases; platforms lists platform dimensions and exampleLanguages; relationship_natures lists relation labels; filter_values lists statuses, consequence impacts, CWE mapping usage, CWE taxonomy names, severity, and likelihood; workflow explains navigation; versions reports catalog freshness and refresh health.',
     ),
     filter: filterSchema(
-      'All-token case-insensitive label filter; each token matches at a word start or camelCase hump, never inside a word. Blank means unset.',
+      'All-token case-insensitive label filter; each token matches at a word start or camelCase hump. Tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start; spelling coincidences can match. Blank means unset.',
     ),
     ...pagingShape,
   }),

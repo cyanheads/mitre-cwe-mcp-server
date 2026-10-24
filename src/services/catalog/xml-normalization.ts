@@ -315,6 +315,7 @@ function trimRuns(runs: readonly Run[]): {
   leading: Run[];
   trailing: Run[];
   block: boolean;
+  leadingBlock: boolean;
 } {
   let first = 0;
   let last = runs.length - 1;
@@ -323,9 +324,11 @@ function trimRuns(runs: readonly Run[]): {
   let leading = false;
   let trailing = false;
   let block = false;
+  let leadingBlock = false;
   for (; first <= last && !(runs[first] as Run).value.trim(); first++) {
     const run = runs[first] as Run;
     block ||= run.block === true;
+    leadingBlock ||= run.block === true;
     if (isHardBreak(run)) leadingBreaks.push(run);
     else leading ||= run.value !== '';
   }
@@ -352,6 +355,7 @@ function trimRuns(runs: readonly Run[]): {
     leading: edge(leadingBreaks, leading),
     trailing: edge(trailingBreaks.reverse(), trailing),
     block,
+    leadingBlock,
   };
 }
 const EDGE = /[\s\p{P}\p{S}]/u;
@@ -413,6 +417,21 @@ function indentRuns(runs: readonly Run[], indent: string): Run[] {
         ...(part ? [{ mark: run.mark, value: part }] : []),
       ]),
   );
+}
+/** Normalize a quotation's lines before prefixing them, keeping source and syntax roles intact. */
+function quoteRuns(runs: readonly Run[]): Run[] {
+  const { text, marks } = flatten(runs);
+  if (!text) return [];
+  const quoted = syntax('> ');
+  for (let start = 0; start < text.length; ) {
+    const mark = marks[start] as number;
+    let end = start + 1;
+    while (end < text.length && marks[end] === mark && text[end - 1] !== '\n') end++;
+    quoted.push({ mark, value: text.slice(start, end) });
+    if (text[end - 1] === '\n') quoted.push(...syntax('> '));
+    start = end;
+  }
+  return quoted;
 }
 /** Fold line breaks to single spaces, for a table cell that must stay on one line. */
 function oneLine(runs: readonly Run[]): Run[] {
@@ -487,6 +506,10 @@ function renderNode(node: OrderedNode, context: number, open: number): Run[] {
     case 'div': {
       // A paragraph trims a line-start block at its edge, so its own separators take over the mark.
       const { runs, block } = trimRuns(inner());
+      if (name === 'div' && !(context & CELL) && MARGIN_LEFT.test(attribute(node, 'style') ?? '')) {
+        if (!runs.length) return [];
+        return [...blockSeparator('\n\n'), ...quoteRuns(runs), ...blockSeparator('\n\n')];
+      }
       const separator = block ? blockSeparator('\n\n') : syntax('\n\n');
       return [...separator, ...runs, ...separator];
     }
@@ -498,8 +521,12 @@ function renderNode(node: OrderedNode, context: number, open: number): Run[] {
         return inlineItems(entries.map((entry) => renderNodes(contents(entry), context, open)));
       const items = entries.map((entry, index) => {
         const marker = name === 'ol' ? `${index + 1}. ` : '- ';
-        const body = trimRuns(renderNodes(contents(entry), context, open)).runs;
-        return [...syntax(marker), ...indentRuns(body, ' '.repeat(marker.length))];
+        const { runs: body, leadingBlock } = trimRuns(renderNodes(contents(entry), context, open));
+        return [
+          ...syntax(marker),
+          ...(leadingBlock ? syntax(`\n${' '.repeat(marker.length)}`) : []),
+          ...indentRuns(body, ' '.repeat(marker.length)),
+        ];
       });
       return [
         ...blockSeparator('\n\n'),

@@ -866,6 +866,149 @@ describe('orderedContentToMarkdown', () => {
     ':@': { '@_src': src, '@_alt': alt },
     img: [],
   });
+  const quote = (...content: OrderedNode[]): OrderedNode => ({
+    ':@': { '@_style': 'color:red; MARGIN-LEFT : 1em;' },
+    div: content,
+  });
+
+  it('keeps ordinary divs as paragraphs and flattens margin divs in cells', () => {
+    expect(orderedContentToMarkdown([el('div', textNode('one')), el('div', textNode('two'))])).toBe(
+      'one\n\ntwo',
+    );
+    expect(
+      orderedContentToMarkdown([el('table', el('tr', el('td', quote(textNode('cell')))))]),
+    ).toBe('| cell |\n| --- |');
+    expect(exampleCodeText([quote(textNode('code'), quote(textNode('nested')))])).toBe(
+      '    code\n        nested',
+    );
+  });
+
+  it('quotes every line of nonempty margin divs and preserves nested block structure', () => {
+    const markdown = orderedContentToMarkdown([
+      textNode('Before'),
+      quote(el('p', textNode('one')), quote(el('b', textNode('two'))), el('p', textNode('three'))),
+      quote(),
+      textNode('After'),
+    ]);
+    expect(markdown).toBe('Before\n\n> one\n> \n> > **two**\n> \n> three\n\nAfter');
+    expect(parseMarkdown(markdown).text).toBe('Before\none\ntwo\nthree\nAfter');
+    expect(parseMarkdown(markdown).nodes.filter((node) => node === 'block_quote')).toHaveLength(2);
+    expect(orderedContentToMarkdown([quote(), quote(textNode('   '))])).toBe('');
+    expect(
+      orderedContentToMarkdown([quote(textNode('a'), el('br'), el('br'), textNode('b'))]),
+    ).toBe('> a  \n> \n> b');
+  });
+
+  it('preserves truly empty recursive lists without visible markers or accidental blocks', () => {
+    for (const names of [
+      ['ul', 'ul', 'ul'],
+      ['ol', 'ol', 'ol'],
+      ['ul', 'ol', 'ul'],
+    ]) {
+      const nested = el(
+        names[0]!,
+        el('li', el(names[1]!, el('li', el(names[2]!, el('li'), el('li'))))),
+      );
+      const markdown = orderedContentToMarkdown([nested]);
+      const parsed = parseMarkdown(markdown);
+      expect(parsed.text.trim()).toBe('');
+      expect(parsed.nodes.filter((node) => node === 'list')).toHaveLength(3);
+      expect(parsed.nodes.filter((node) => node === 'item')).toHaveLength(4);
+      expect(parsed.nodes).not.toContain('thematic_break');
+      expect(parsed.nodes).not.toContain('code_block');
+    }
+  });
+
+  it('keeps quotes and lists on their own lines at inline edges and within each other', () => {
+    const list = el('ul', el('li', quote(link('https://e.test', el('i', textNode('payload'))))));
+    for (const wrapper of [
+      (node: OrderedNode) => el('b', node),
+      (node: OrderedNode) => link('https://f.test', node),
+    ]) {
+      const markdown = orderedContentToMarkdown([
+        textNode('before'),
+        wrapper(quote(list)),
+        textNode('after'),
+      ]);
+      const parsed = parseMarkdown(markdown);
+      expect(parsed.text).toBe('before\npayload\nafter');
+      expect(parsed.nodes.filter((node) => node === 'block_quote')).toHaveLength(2);
+      expect(parsed.nodes.filter((node) => node === 'link')).toHaveLength(1);
+      expect(parsed.nodes).toContain('emph');
+      expect(parsed.nodes).not.toContain('strong');
+      expect(parsed.nodes).not.toContain('code_block');
+      expect(renderHtml(markdown)).toContain('<li>\n<blockquote>');
+    }
+  });
+
+  it('preserves empty list structure before and after prose and at multi-digit content columns', () => {
+    const inner = el('ul', el('li'), el('li'));
+    const items = Array.from({ length: 10 }, (_, index) =>
+      el('li', ...(index === 9 ? [inner] : [])),
+    );
+    const markdown = orderedContentToMarkdown([
+      textNode('before'),
+      el('ol', ...items),
+      textNode('after'),
+    ]);
+    expect(markdown).toContain('10. \n    - \n    -');
+    expect(parseMarkdown(markdown).text).toBe('before\nafter');
+    expect(renderHtml(markdown)).toContain('<li>\n<ul>\n<li></li>\n<li></li>\n</ul>\n</li>');
+  });
+
+  it('keeps quote source syntax inert and excludes generated markers from search projections', () => {
+    const source =
+      '<xhtml:div style="margin-left:1em;">&gt; [x]: evil.html<xhtml:br/>1. literal <xhtml:code>code</xhtml:code><xhtml:div style="margin-left:1em;">tail</xhtml:div></xhtml:div>';
+    const catalog = parseCweCatalog(cweXml.replace('Sparse description.', source));
+    const markdown = catalog.weaknesses.get('CWE-20')!.description;
+    expect(parseMarkdown(markdown).text).toBe('> [x]: evil.html\n1. literal code\ntail');
+    expect(referenceDefinitions(markdown)).toEqual([]);
+    expect(parseMarkdown(markdown).nodes).not.toContain('list');
+    expect(catalog.searchText.get('CWE-20')?.description).toBe(
+      '> [x]: evil.html 1. literal code tail',
+    );
+  });
+
+  it('prefixes quoted lines in linear time', { timeout: 60_000 }, () => {
+    for (const opener of ['[', '[[', '[a](', '> > ']) {
+      for (const breaks of [false, true]) {
+        const count = (length: number) => Math.ceil(length / (opener.length + (breaks ? 5 : 0)));
+        const build = (length: number) => [
+          quote(
+            {
+              ':@': { '@_style': 'margin-left:1em;' },
+              div: [
+                ...(breaks
+                  ? Array.from({ length: count(length) }, () => [textNode(opener), el('br')]).flat()
+                  : [textNode(opener.repeat(count(length))), el('br')]),
+                textNode('tail'),
+              ],
+            },
+            el('br'),
+            textNode('end'),
+          ),
+        ];
+        for (const length of [5_000, 20_000, 80_000]) {
+          const markdown = orderedContentToMarkdown(build(length));
+          expect(
+            parseMarkdown(markdown).nodes.filter((node) => node === 'block_quote'),
+          ).toHaveLength(2);
+          expect(referenceDefinitions(markdown)).toEqual([]);
+          const source = breaks
+            ? Array.from({ length: count(length) }, () => opener).join(' ')
+            : opener.repeat(count(length));
+          expect(parseMarkdown(markdown).text.replace(/\s+/g, ' ').trim()).toBe(
+            `${source} tail end`.replace(/\s+/g, ' ').trim(),
+          );
+        }
+        expectLinearTime(`quote ${opener}, breaks ${breaks}`, build, (nodes) => {
+          const markdown = orderedContentToMarkdown(nodes);
+          expect(markdown.startsWith('> > ')).toBe(true);
+          expect(markdown.endsWith('> end')).toBe(true);
+        });
+      }
+    }
+  });
   /** [source, stored, visible text, node types after the document] */
   type Case = [OrderedNode[], string, string, string[]];
   function expectDocuments(cases: Case[]) {
@@ -1585,11 +1728,7 @@ describe('orderedContentToMarkdown', () => {
             nodes('node', 3).map((content) => el('p', ...content)),
             codeText.map((value) => el('pre', textNode(value))),
             fc.array(cells, { minLength: 1, maxLength: 2 }).map((rows) => table(...rows)),
-            // An item led by text: a nested list whose first item is empty puts three markers on
-            // one line, which CommonMark reads as a thematic break, a list layout case of its own.
-            fc
-              .array(nodes('node', 2), { minLength: 1, maxLength: 2 })
-              .map((items) => ul(...items.map((content) => [textNode('a'), ...content]))),
+            fc.array(nodes('node', 2), { minLength: 1, maxLength: 2 }).map((items) => ul(...items)),
           ),
         };
       });
@@ -1609,7 +1748,7 @@ describe('orderedContentToMarkdown', () => {
         nodes
           .map((item) => {
             const name = key(item);
-            if (!name) return item['#text'] as string;
+            if (!name) return typeof item['#text'] === 'string' ? item['#text'] : '';
             const content = item[name] as OrderedNode[];
             const attributes = item[':@'] as Record<string, string> | undefined;
             switch (name) {

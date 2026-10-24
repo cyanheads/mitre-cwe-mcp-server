@@ -428,6 +428,7 @@ const NEXT_WORD_START = new RegExp(WORD_START.source, 'gu');
 const DIGIT = /\p{N}/uy;
 const WORD_LED = /^[\p{L}\p{N}]/u;
 const DIGIT_ENDED = /\p{N}$/u;
+const PREFIX_ELIGIBLE = /^\p{L}{4,}$/u;
 function holdsAt(pattern: RegExp, text: string, index: number): boolean {
   pattern.lastIndex = index;
   return pattern.test(text);
@@ -435,12 +436,14 @@ function holdsAt(pattern: RegExp, text: string, index: number): boolean {
 
 /**
  * The filter-token test that every text filter shares, bound to one text. A lowercased token
- * starting with a letter or digit matches only at a word start: the text start, after any other
+ * starting with a letter or digit matches at a word start: the text start, after any other
  * character (`_` included), or at a camelCase hump in the original-case text (`dos` in ReDoS, `path`
  * in XPath). A token ending in a digit never matches before a digit (`79` skips RFC 793). A token
  * starting with punctuation (`.net`, `"<script>"`) matches anywhere. The search is literal, with
  * one-character boundary tests beside it and no pattern built from the token. After a rejected
  * occurrence it resumes at the next word start, so each run of word characters is passed once.
+ * Tokens of at least four Unicode letters also match after one literal un or mis prefix at an
+ * existing word start. Prefixes are never stripped recursively; spelling coincidences can match.
  */
 export function tokenMatcher(text: string): (token: string) => boolean {
   /**
@@ -456,9 +459,14 @@ export function tokenMatcher(text: string): (token: string) => boolean {
     let index = lower.indexOf(token);
     if (index === -1 || !WORD_LED.test(token)) return index !== -1;
     const digitEnded = DIGIT_ENDED.test(token);
+    const prefixEligible = PREFIX_ELIGIBLE.test(token);
     while (index !== -1) {
       if (
-        holdsAt(WORD_START, text, index) &&
+        (holdsAt(WORD_START, text, index) ||
+          (prefixEligible &&
+            ((lower.slice(index - 2, index) === 'un' && holdsAt(WORD_START, text, index - 2)) ||
+              (lower.slice(index - 3, index) === 'mis' &&
+                holdsAt(WORD_START, text, index - 3))))) &&
         !(digitEnded && holdsAt(DIGIT, text, index + token.length))
       )
         return true;
@@ -652,7 +660,7 @@ export function searchAttackPatterns(
  * Whether one token of a text filter matches, on its own, a weakness or a pattern the inactive
  * setting admits. When none does, no subset of the tokens matches either, so a zero-hit notice
  * suggests fewer terms only when this holds. Tokens match as the search matches them
- * (`tokenMatcher`), so one that occurs only inside words counts as unmatched. One pass that
+ * (`tokenMatcher`), including its bounded prefix cases. One pass that
  * lowercases each record once and stops at the first match.
  */
 export function someTokenMatches(

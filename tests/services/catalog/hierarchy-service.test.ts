@@ -709,10 +709,18 @@ describe('hierarchy request ownership', () => {
     await Promise.resolve();
     await Promise.resolve();
     controller.abort();
-    expect(await queued).toMatchObject({ code: JsonRpcErrorCode.RequestCancelled });
+    expect(await queued).toMatchObject({
+      code: JsonRpcErrorCode.RequestCancelled,
+      message: 'The hierarchy request was cancelled.',
+      data: { retryable: false },
+    });
     expect(request).toHaveBeenCalledTimes(4);
     activeController.abort();
-    expect(await running).toMatchObject({ code: JsonRpcErrorCode.RequestCancelled });
+    expect(await running).toMatchObject({
+      code: JsonRpcErrorCode.RequestCancelled,
+      message: 'The hierarchy request was cancelled.',
+      data: { retryable: false },
+    });
     await live.dispose();
     await Promise.all(blockers);
     expect(request).toHaveBeenCalledTimes(4);
@@ -736,7 +744,11 @@ describe('hierarchy request ownership', () => {
     for (const result of await Promise.all(pending))
       expect(result).toMatchObject({
         code: JsonRpcErrorCode.Timeout,
-        data: { recovery: { hint: HIERARCHY_RECOVERY } },
+        data: {
+          reason: 'hierarchy_timeout',
+          retryable: true,
+          recovery: { hint: HIERARCHY_RECOVERY },
+        },
       });
     expect(request).toHaveBeenCalledTimes(4);
   });

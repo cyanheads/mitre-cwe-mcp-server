@@ -163,6 +163,35 @@ afterEach(async () => {
 });
 
 describe('complete delivered response budget', () => {
+  it('sizes omitted-section recalls with record metadata instead of adding section-only sizes', async () => {
+    await serve(
+      `<Weakness ID="1" Name="${'N'.repeat(2500)}" Status="Stable" Abstraction="Base"><Description>${'s'.repeat(6000)}</Description><Common_Consequences><Consequence><Scope>Integrity</Scope><Impact>Modify Data</Impact><Note>${'c'.repeat(4500)}</Note></Consequence></Common_Consequences><Potential_Mitigations><Mitigation><Description>${'m'.repeat(4500)}</Description></Mitigation></Potential_Mitigations></Weakness>`,
+      '<View ID="1000" Name="View" Type="Graph" Status="Stable"><Members/></View>',
+      '<Attack_Pattern ID="1" Name="Pattern" Status="Stable" Abstraction="Standard"><Description>Record.</Description></Attack_Pattern>',
+    );
+    const wire = await runToolContract(cweGetWeakness, { ids: ['1'] });
+    bounded(wire);
+    const entry = cweGetWeakness.output.parse(wire.structuredContent).entries[0]!;
+    expect(entry.kind).toBe('partial');
+    expect(entry.outline?.map(({ section }) => section)).toEqual(['consequences', 'mitigations']);
+    expect(entry.outline?.reduce((sum, { sizeInBytes }) => sum + sizeInBytes, 0)).toBeLessThan(
+      budget,
+    );
+    expect(entry.notice).toContain(
+      'sections ["consequences"]. Repeat cwe_get_weakness with this ID and sections ["mitigations"].',
+    );
+    expect(lines(wire)).toContain(`> ${entry.notice}`);
+    const combined = await runToolContract(cweGetWeakness, {
+      ids: ['1'],
+      sections: ['consequences', 'mitigations'],
+    });
+    expect(bytes(combined)).toBeGreaterThan(budget);
+    for (const section of ['consequences', 'mitigations']) {
+      const recall = await runToolContract(cweGetWeakness, { ids: ['1'], sections: [section] });
+      bounded(recall);
+      expect(cweGetWeakness.output.parse(recall.structuredContent).entries[0]?.kind).toBe('full');
+    }
+  });
   it.each(['reference', 'search', 'weaknesses'] as const)(
     'bounds %s pages and exhausts all ordered items exactly once',
     async (kind) => {

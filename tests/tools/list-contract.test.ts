@@ -184,12 +184,16 @@ function catalogs(version = '4.list') {
   ].join('')}</Attack_Patterns></Attack_Pattern_Catalog>`;
   return { cwe, capec };
 }
-async function load(version?: string, editCwe: (xml: string) => string = (xml) => xml) {
+async function load(
+  version?: string,
+  editCwe: (xml: string) => string = (xml) => xml,
+  editCapec: (xml: string) => string = (xml) => xml,
+) {
   const xml = catalogs(version);
   const request: HttpRequest = async (url) => {
     if (url === SOURCE_URLS.cwe)
       return new Response(zipSync({ 'cwe.xml': strToU8(editCwe(xml.cwe)) }));
-    if (url === SOURCE_URLS.capec) return new Response(xml.capec);
+    if (url === SOURCE_URLS.capec) return new Response(editCapec(xml.capec));
     throw new Error(`Unexpected network request: ${url}`);
   };
   await initCatalogService({ request, clock, context: createMockContext() });
@@ -932,6 +936,44 @@ describe('complete local search and view contracts', () => {
     expect(await platforms('script')).toEqual(['JavaScript']);
     expect(await platforms('javascript')).toEqual(['JavaScript']);
     expect(await platforms('avascript')).toEqual([]);
+  });
+
+  it('uses the bounded prefix rule in search tiers, reference labels and fewer-term notices on both surfaces', async () => {
+    await disposeCatalogService();
+    await load(
+      undefined,
+      (xml) =>
+        xml
+          .replace('Name="Navigation"', 'Name="Untrusted Navigation"')
+          .replace(
+            '</Weaknesses>',
+            `${weakness(2, 'Untrusted', 'Other.')}${weakness(1, 'Ordinary', 'Untrusted description.')}${weakness(3, 'Other', 'Other.', terms(['Misconfigured']))}</Weaknesses>`,
+          ),
+      (xml) =>
+        xml.replace(
+          '</Attack_Patterns>',
+          `${pattern(1, 'Untrusted', 'Other.')}${pattern(6, 'Other', 'Untrusted description.')}${pattern(7, 'Other', 'Other.', terms(['Misconfigured']))}</Attack_Patterns>`,
+        ),
+    );
+    for (const [definition, args, expected] of [
+      [cweSearchWeaknesses, { filter: 'trusted' }, ['CWE-2', 'CWE-1']],
+      [cweSearchWeaknesses, { filter: 'config' }, ['CWE-3']],
+      [cweSearchAttackPatterns, { filter: 'trusted' }, ['CAPEC-1', 'CAPEC-6']],
+      [cweSearchAttackPatterns, { filter: 'config' }, ['CAPEC-7']],
+      [cweListReference, { topic: 'views', filter: 'trusted' }, ['CWE-1000']],
+    ] as const) {
+      const wire = await runToolContract(definition, args);
+      expect(wire.isError).not.toBe(true);
+      expect(copied(wire, 'id')).toEqual(expected);
+      expect(wire.structuredContent).toMatchObject({ totalCount: expected.length });
+      const empty = await runToolContract(definition, { ...args, filter: `${args.filter} zzqx` });
+      expect(empty.structuredContent).toMatchObject({
+        totalCount: 0,
+        notice: expect.stringContaining('fewer terms'),
+      });
+      for (const surface of [empty.content, empty.structuredContent])
+        expect(JSON.stringify(surface)).toContain('fewer terms');
+    }
   });
 
   it('accepts a status only categories carry, returns no rows, and says why on both surfaces', async () => {

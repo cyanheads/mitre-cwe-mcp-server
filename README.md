@@ -47,7 +47,7 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 
 ### `cwe_list_reference` <sub>tool</sub>
 
-- `topic`: `views`, `abstraction_levels`, `mitigation_phases`, `platforms`, `relationship_natures`, `filter_values`, `workflow`, or `versions`; optional all-token `filter` on labels, each token at a word start or camelCase hump (`script` finds JavaScript)
+- `topic`: `views`, `abstraction_levels`, `mitigation_phases`, `platforms`, `relationship_natures`, `filter_values`, `workflow`, or `versions`; optional all-token `filter` on labels, using the word-start and bounded-prefix rule below (`script` finds JavaScript)
 - `views` lists every CWE view with its direct member count, and a filter-defined view's `filterDefinition`
 - `filter_values` lists weakness statuses, mapping usage, and taxonomy names, consequence impacts, and CAPEC statuses, severity, and likelihood
 - Lists page with `limit` (default 20, max 100) and `pagination.nextCursor`; `versions` adds each loaded catalog's version, date, counts, and refresh errors
@@ -59,7 +59,7 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 - 1–200 CWE IDs (`CWE-79`, `CWE79`, `cwe 079`, `CWE_79`, or `79`); up to 20 distinct items are processed per call and the rest return in `deferredIds`. A malformed item comes back in `notFound` without failing the batch; only an item holding a control character other than whitespace, or a non-ID item over 150 characters, rejects the call
 - `sections`: `summary`, `consequences`, `mitigations`, `relations`, `examples`, `detection`, `observed`, `platforms`, `mappings`, `notes` (default: the first four); `[]` returns an outline
 - `summary` includes recorded alternate terms (`XSS`), ordinalities (Primary, Resultant, Indirect), and background details, `platforms` adds functional areas and affected resources, and `relations` names each related weakness. `notes` returns every note MITRE records for weaknesses and categories, such as Relationship, Maintenance, Terminology, and Research Gap notes
-- `entries[].kind` is `full`, `partial` (default sections that did not fit the response budget are listed in `outline` with their sizes, and `notice` gives the re-call), or `outline`; `notFound[].reason` is `not_found`, `wrong_type` (a view, which belongs to `cwe_get_view`, or a prefixed ID of the other catalog), or `invalid_id` (an item that is no ID, echoed trimmed; `NVD-CWE-noinfo` and `NVD-CWE-Other` get their own guidance). Categories resolve here
+- `entries[].kind` is `full`, `partial` (default sections that did not fit the response budget are listed in `outline` with their sizes, and `notice` groups re-calls by their complete response size, keeping example parameters only on the examples group), or `outline`; `notFound[].reason` is `not_found`, `wrong_type` (a view, which belongs to `cwe_get_view`, or a prefixed ID of the other catalog), or `invalid_id` (an item that is no ID, echoed trimmed; `NVD-CWE-noinfo` and `NVD-CWE-Other` get their own guidance). Categories resolve here
 - Examples filter by `exampleLanguage` and page with `exampleOffset` (default 0), `exampleLimit` (default 3, no fixed cap), and `examplePage.nextOffset`. With `sections` omitted, setting any of the three to a non-default value adds `examples` after the defaults (outlined with its page size and a re-call when it does not fit); explicit `sections` without `examples` ignore them, and `guidance` gives the re-call that adds `examples`. Each example keeps its ordered prose and code, with code laid out as MITRE's pages show it (4 spaces per indentation level), and lists the references it cites in `references`
 
 ---
@@ -77,7 +77,7 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 ### `cwe_search_weaknesses` <sub>tool</sub>
 
 - Optional all-token `filter` over the name, MITRE's recorded alternate terms (`XSS`, `ReDoS`, `UAF`), the description, and the extended description, plus exact `language`, `technology`, `abstraction`, `consequenceImpact`, `status`, `mappingUsage`, `taxonomyName`, `taxonomyEntryId`, `observedCveId`, and `viewId`; no filters browses the catalog
-- A `filter` token matches at a word start, after `_`, or at a camelCase hump (`dos` finds ReDoS), never inside a word: `serialization` does not find CWE-502, `deserialization` does, and `trusted` does not find untrusted. A token ending in a digit never matches before another digit (`79` skips RFC 793)
+- A `filter` token matches at a word start, after `_`, or at a camelCase hump (`dos` finds ReDoS). Tokens of at least four Unicode letters also match after exactly one `un` or `mis` prefix at a word start (`trusted` finds untrusted; `config` finds misconfiguration). Prefixes are never stripped recursively; spelling coincidences remain possible. Other compounds are searched as written: `serialization` does not find CWE-502, `deserialization` does. A token ending in a digit never matches before another digit (`79` skips RFC 793)
 - Each result carries MITRE's `mappingUsage`, such as `Allowed`, `Allowed-with-Review`, or `Prohibited`, which says whether the entry may be used to map a vulnerability
 - `taxonomyName` (such as `CERT C Secure Coding` or `ISA/IEC 62443`) and `taxonomyEntryId` (such as `ARR30-C` or `A1`, any case) find the weaknesses that record a taxonomy mapping, both holding on one mapping when given together; `observedCveId` (such as `CVE-2021-44228`) finds the weaknesses MITRE cites that CVE on as an observed example, not NVD's CVE-to-CWE assignments. Each result then lists every mapping (`matchedTaxonomyMappings`) or observed example (`matchedObservedExamples`) that matched
 - `viewId` includes same-view membership closure, or for a filter-defined view the weaknesses its source XPath filter selects (CWE-658 C, CWE-702 Implementation, …). Categories are excluded; every status is included by default
@@ -87,7 +87,7 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 
 ### `cwe_search_attack_patterns` <sub>tool</sub>
 
-- Optional all-token `filter` over the name, recorded alternate terms (`MITM`), and the description, each token matched at a word start as in `cwe_search_weaknesses`, plus `cweId`, `attackTechniqueId`, `abstraction`, `severity`, and `likelihood`; CWE mappings match exactly, and a parent ATT&CK technique includes its recorded subtechniques
+- Optional all-token `filter` over the name, recorded alternate terms (`MITM`), and the description, using the same word-start and bounded-prefix rule as `cwe_search_weaknesses`, plus `cweId`, `attackTechniqueId`, `abstraction`, `severity`, and `likelihood`; CWE mappings match exactly, and a parent ATT&CK technique includes its recorded subtechniques
 - `includeInactive` (default `false`) adds Deprecated and Obsolete patterns. Ranked by all tokens in the name or in one alternate term, then in the description, then any other match, then numeric ID; `cwe_get_attack_pattern` returns the terms in `summary`. `limit` default 20, max 100; continue with `pagination.nextCursor`
 
 ---
@@ -105,6 +105,7 @@ MITRE's CWE and CAPEC catalogs connect software and hardware weaknesses with att
 
 - One CWE `id` and a `direction`: `parents`, `children`, `ancestors`, or `descendants`; `viewId` defaults to `1000`, or `all` for every view. `primaryOnly` applies to ancestors only. Parents and children include category and view relations and match the first level of the same view's tree
 - View-scoped `nodes`, parent-to-child `edges`, `found`, `retrievedAt`, and `hierarchyFingerprint`. Empty relations succeed; upstream failures are errors, and a temporary MITRE refusal (HTTP 403) is retryable after a few minutes. Node names come from the loaded catalog and can lag the live API
+- The total deadline includes queue wait; expiry is retryable `hierarchy_timeout`, while caller cancellation is nonretryable. Source-recorded `relations` remain available through `cwe_get_weakness`, but do not replace live children or descendants
 - `limit` default 20, max 100 edges; each page lists only the nodes its edges reference, plus any root without edges on the first page. Each `pagination.nextCursor` call re-fetches the traversal; `invalid_cursor` means the topology or catalog changed, so restart without a cursor
 
 ## Features

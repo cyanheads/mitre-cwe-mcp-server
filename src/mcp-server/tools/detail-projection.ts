@@ -109,6 +109,7 @@ function project(
   sections: readonly string[],
   omitted: readonly string[] | undefined,
   toolName: 'cwe_get_weakness' | 'cwe_get_attack_pattern',
+  provenance: Provenance,
   page?: SectionPage,
 ) {
   const rawFieldsOf = (section: string) => pick(entry, groups[section] ?? []);
@@ -144,12 +145,27 @@ function project(
     };
   }
   const absent = sections.filter((section) => !availableSections.includes(section));
-  const paged = recalledPage(omitted);
+  /** Explicit single-record recalls have no deferrals or irrelevant example arguments. */
+  const recallFits = (requested: readonly string[]) => {
+    const result = {
+      entries: [project(entry, groups, requested, [], toolName, provenance, page)],
+      notFound: [],
+      deferredIds: [],
+      provenance,
+    };
+    return deliveredSize(result, detailEnrichment(result)) <= RESPONSE_BUDGET;
+  };
+  const recalls: string[][] = [];
+  for (const section of omitted) {
+    const current = recalls.at(-1);
+    if (current && recallFits([...current, section])) current.push(section);
+    else recalls.push([section]);
+  }
   const notice = [
     absent.length &&
       `The source entry has no content for these selected sections: ${absent.join(', ')}.`,
     omitted.length &&
-      `Omitted to fit the 24,000-byte response budget: ${omitted.join(', ')}. Repeat ${toolName} with this ID and sections ${JSON.stringify(omitted)}${paged ? `, ${paged.recall}` : ''}.`,
+      `Omitted to fit the 24,000-byte response budget: ${omitted.join(', ')}. ${recalls.map((requested) => `Repeat ${toolName} with this ID and sections ${JSON.stringify(requested)}${recalledPage(requested) ? `, ${page?.recall}` : ''}.`).join(' ')}`,
   ]
     .filter(Boolean)
     .join(' ');
@@ -419,6 +435,7 @@ export function getWeaknessDetails(
           sections,
           omitted,
           'cwe_get_weakness',
+          snapshot.provenance,
           source.examples === undefined
             ? undefined
             : selectsExamples
@@ -476,6 +493,7 @@ export function getAttackPatternDetails(
           input.sections ?? capecDefaults[source.type],
           omitted,
           'cwe_get_attack_pattern',
+          snapshot.provenance,
         ),
       ),
   });

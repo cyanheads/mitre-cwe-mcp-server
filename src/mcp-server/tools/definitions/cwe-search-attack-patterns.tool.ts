@@ -76,11 +76,11 @@ function searchNotice(snapshot: CatalogSnapshot, filters: AttackPatternFilters):
 export const cweSearchAttackPatterns = tool('cwe_search_attack_patterns', {
   title: 'Search CAPEC attack patterns',
   description:
-    'Search CAPEC attack patterns by every whitespace-separated text token, recorded CWE or ATT&CK mapping, abstraction, severity, or likelihood. A text token matches at a word start, never inside a word, so search a compound or negated form such as deserialization or untrusted as written. Parent ATT&CK techniques include recorded subtechniques; CWE mappings are exact without hierarchy expansion. Omit filters to browse. Deprecated and Obsolete patterns are excluded by default. Mappings are incomplete and do not validate current ATT&CK coverage. Results order by all tokens in the name or in one recorded alternate term such as MITM, then all in the description, then any other match, then numeric ID; use cwe_get_attack_pattern for complete sections and follow nextCursor for remaining matches.',
+    'Search CAPEC attack patterns by every whitespace-separated text token, recorded CWE or ATT&CK mapping, abstraction, severity, or likelihood. Text tokens match at word starts or camelCase humps; tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (config finds misconfiguration), with possible spelling coincidences. Search other compounds such as deserialization as written. Parent ATT&CK techniques include recorded subtechniques; CWE mappings are exact without hierarchy expansion. Omit filters to browse. Deprecated and Obsolete patterns are excluded by default. Mappings are incomplete and do not validate current ATT&CK coverage. Results order by all tokens in the name or in one recorded alternate term such as MITM, then all in the description, then any other match, then numeric ID; use cwe_get_attack_pattern for complete sections and follow nextCursor for remaining matches.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     filter: filterSchema(
-      'All-token case-insensitive filter over the name, recorded alternate terms, and description; each token matches at a word start or camelCase hump (path finds XPath), never inside a word. Blank means unset.',
+      'All-token case-insensitive filter over the name, recorded alternate terms, and description; each token matches at a word start or camelCase hump (path finds XPath). Tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start; spelling coincidences can match. Blank means unset.',
     ),
     cweId: z
       .string()

@@ -44,7 +44,7 @@ import {
 
 const filtersShape = {
   filter: filterSchema(
-    'All whitespace-separated tokens must match the name, a recorded alternate term, the description, or the extended description, each at a word start or camelCase hump (dos finds ReDoS), never inside a word: search a compound or negated form as written, such as deserialization or untrusted. Blank means unset.',
+    'All whitespace-separated tokens must match the name, a recorded alternate term, the description, or the extended description, each at a word start or camelCase hump (dos finds ReDoS). Tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (trusted finds untrusted); spelling coincidences can match. Other compounds such as deserialization must be searched as written. Blank means unset.',
   ),
   language: text(
     'Exact platform language name or class; discover with cwe_list_reference topic platforms.',
@@ -170,7 +170,7 @@ function searchNotice(
 export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
   title: 'Search CWE weaknesses',
   description:
-    'Search CWE weaknesses by all text tokens, exact platform or consequence vocabulary, abstraction, status, mapping usage, view membership, a recorded taxonomy mapping (taxonomy name or entry ID such as CERT C ARR30-C), or a CVE that MITRE cites as an observed example. A text token matches at a word start, never inside a word, so search a compound or negated form such as deserialization or untrusted as written; text never matches an entry ID or CVE. Omit filters to browse; categories are excluded. Each result carries MITRE’s mapping usage, which says whether the entry may be used to map a vulnerability, and, under a taxonomy or CVE filter, every mapping or observed example that matched. Results order by all tokens in the name or in one recorded alternate term such as XSS, then all in the description, then any other match, then numeric ID. Description previews contain the first sentence; use cwe_get_weakness for complete sections. Follow nextCursor for remaining matches.',
+    'Search CWE weaknesses by all text tokens, exact platform or consequence vocabulary, abstraction, status, mapping usage, view membership, a recorded taxonomy mapping (taxonomy name or entry ID such as CERT C ARR30-C), or a CVE that MITRE cites as an observed example. Text tokens match at word starts or camelCase humps; tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (trusted finds untrusted), with possible spelling coincidences. Search other compounds such as deserialization as written; text never matches an entry ID or CVE. Omit filters to browse; categories are excluded. Each result carries MITRE’s mapping usage, which says whether the entry may be used to map a vulnerability, and, under a taxonomy or CVE filter, every mapping or observed example that matched. Results order by all tokens in the name or in one recorded alternate term such as XSS, then all in the description, then any other match, then numeric ID. Description previews contain the first sentence; use cwe_get_weakness for complete sections. Follow nextCursor for remaining matches.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({ ...filtersShape, ...pagingShape }),
   output: z.object({

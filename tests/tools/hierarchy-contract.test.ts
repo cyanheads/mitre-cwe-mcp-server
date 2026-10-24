@@ -105,6 +105,99 @@ afterEach(async () => {
 });
 
 describe('cwe_get_hierarchy public contracts', () => {
+  it('reports owned active and queued deadline expiry as retryable hierarchy_timeout on both surfaces', async () => {
+    await disposeHierarchyService();
+    const expirations: (() => void)[] = [];
+    let requests = 0;
+    initHierarchyService({
+      clock: {
+        now: () => 0,
+        schedule: (callback) => {
+          expirations.push(callback);
+          return { cancel() {} };
+        },
+      },
+      request: async (_url, options) =>
+        new Promise((_resolve, reject) => {
+          requests++;
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), {
+            once: true,
+          });
+        }),
+    });
+    const pending = Array.from({ length: 5 }, () => call({ direction: 'descendants' }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(requests).toBe(4);
+    expect(expirations).toHaveLength(5);
+    // Expire the queued caller first: it must never reach the request adapter.
+    expirations[4]!();
+    for (const expire of expirations.slice(0, 4)) expire();
+    for (const wire of await Promise.all(pending)) {
+      expect(wire.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.Timeout,
+          data: {
+            reason: 'hierarchy_timeout',
+            retryable: true,
+            recovery: {
+              hint: 'Call cwe_get_weakness with sections ["relations"] for source-recorded relations and cwe_list_reference with topic versions. Recorded relations do not replace live children or descendants; retry cwe_get_hierarchy later.',
+            },
+          },
+        },
+      });
+      for (const surface of [wire.content, wire.structuredContent]) {
+        expect(JSON.stringify(surface)).toContain('hierarchy_timeout');
+        expect(JSON.stringify(surface)).toContain(
+          'Recorded relations do not replace live children or descendants',
+        );
+      }
+      expect(lines(wire).join('\n')).toContain(
+        'Call cwe_get_weakness with sections ["relations"] for source-recorded relations and cwe_list_reference with topic versions. Recorded relations do not replace live children or descendants; retry cwe_get_hierarchy later.',
+      );
+    }
+    expect(requests).toBe(4);
+  });
+
+  it('keeps caller cancellation distinct from owned expiry on both surfaces', async () => {
+    await disposeHierarchyService();
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    initHierarchyService({
+      clock,
+      request: async (_url, options) => {
+        started();
+        return new Promise((_resolve, reject) =>
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), {
+            once: true,
+          }),
+        );
+      },
+    });
+    const controller = new AbortController();
+    const pending = runToolContract(
+      cweGetHierarchy,
+      { id: '1', direction: 'descendants' },
+      { context: { signal: controller.signal } },
+    );
+    await ready;
+    controller.abort();
+    const wire = await pending;
+    expect(wire.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.RequestCancelled,
+        message: 'The hierarchy request was cancelled.',
+        data: { retryable: false },
+      },
+    });
+    for (const surface of [wire.content, wire.structuredContent]) {
+      expect(JSON.stringify(surface)).toContain('The hierarchy request was cancelled.');
+      expect(JSON.stringify(surface)).not.toContain('hierarchy_timeout');
+    }
+    expect(lines(wire).join('\n')).toContain('not retryable');
+  });
   it('normalizes IDs and case, applies view 1000 defaults and renders complete endpoint records', async () => {
     body = [raw(2)];
     const wire = await call({ id: ' cwe-0001 ', direction: ' CHILDREN ' });

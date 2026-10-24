@@ -241,7 +241,8 @@ describe('catalog indexes', () => {
       searchAttackPatterns(data, { filter: 'commit', includeInactive: true }).map(
         (entry) => entry.id,
       ),
-    ).toEqual(['CAPEC-422']);
+      // The name tier stays first; the one un prefix admits Uncommitted in the description tier.
+    ).toEqual(['CAPEC-422', 'CAPEC-3']);
     for (const [catalog, filter, includeInactive, expected] of [
       ['cwe', 'zzqx source', false, false],
       ['cwe', 'zzqx resource', false, true],
@@ -721,6 +722,34 @@ describe('catalog indexes', () => {
 
 describe('tokenMatcher', () => {
   it.each([
+    ['untrusted', 'trusted', true],
+    ['misconfiguration', 'config', true],
+    ['unsafe', 'safe', true],
+    ['unétat', 'état', true],
+    ['xuntrusted', 'trusted', false],
+    ['ununtrusted', 'trusted', false],
+    ['mismisconfiguration', 'config', false],
+    ['deserialization', 'serialization', false],
+    ['underlying', 'der', false],
+    ['un79', '79', false],
+    ['unsafe!', 'safe!', false],
+    ['untrusted trusted', 'trusted', true],
+    ['xTrusted', 'trusted', true],
+  ])('bounded prefix in %j for %j is %s', (text, token, expected) => {
+    expect(tokenMatcher(text)(token)).toBe(expected);
+  });
+  it('keeps literal word starts for short, mixed and punctuation tokens around prefixes', () => {
+    for (const [text, token, expected] of [
+      ['under', 'der', false],
+      ['unsafe', 'un', true],
+      ['unC++', 'c++', true],
+      ['un79', '79', false],
+      ['unsafe', 'safe!', false],
+      ['mis.net', '.net', true],
+    ] as const)
+      expect(tokenMatcher(text)(token)).toBe(expected);
+  });
+  it.each([
     // A letter- or digit-led token matches at the start, after any other character, or at a hump.
     ['RCE', 'rce', true],
     ['Resource Force', 'rce', false],
@@ -785,6 +814,27 @@ describe('tokenMatcher', () => {
     ];
     for (const [label, token, build] of shapes)
       expectLinearTime(label, build, (text) => tokenMatcher(text)(token));
+  });
+
+  it.each(
+    [false, true].flatMap((breaks) =>
+      ['[[ununtrusted', 'mismisconfiguration', 'xuntrusted', 'untrustrusted'].map(
+        (unit) => [unit, breaks] as const,
+      ),
+    ),
+  )('keeps bounded prefix scans linear for %s, breaks throughout %s', (unit, breaks) => {
+    const build = (length: number) =>
+      `${`${unit}${breaks ? '\n' : ' '}`.repeat(Math.ceil(length / (unit.length + 1)))}\nunsafe`;
+    // Warm the largest span before measuring the same matcher and regular-expression tier.
+    const large = build(320_000);
+    for (let warm = 0; warm < 100; warm++) tokenMatcher(large)('trusted');
+    expectLinearTime(`${unit}, breaks ${breaks}`, build, (text) => {
+      const has = tokenMatcher(text);
+      expect(has('trusted')).toBe(false);
+      expect(has('config')).toBe(false);
+      expect(has('safe')).toBe(true);
+      expect(has('der')).toBe(false);
+    });
   });
 });
 

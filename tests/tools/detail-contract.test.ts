@@ -134,6 +134,135 @@ afterEach(async () => {
 });
 
 describe('complete detail contracts', () => {
+  it('splits omitted recalls by their complete response and keeps example arguments on their group', async () => {
+    await disposeCatalogService();
+    const mitigation = 'm'.repeat(6000);
+    const example = 'e'.repeat(6000);
+    await load(
+      cwe
+        .replace('Conditional.', 'c'.repeat(7800))
+        .replace('Validate all fields.', mitigation)
+        .replace(
+          '<Body_Text>Second example.</Body_Text>',
+          `<Body_Text>${example}</Body_Text><Example_Code Language="C">second();</Example_Code>`,
+        ),
+    );
+    const wire = await runToolContract(cweGetWeakness, {
+      ids: ['79'],
+      exampleLanguage: ' c ',
+      exampleOffset: 1,
+      exampleLimit: 1,
+    });
+    const notice = entriesOf(wire)[0]?.notice as string;
+    const recipes = [
+      ...notice.matchAll(/Repeat cwe_get_weakness with this ID and sections .*?(?=\. |\.$)/g),
+    ].map(([recipe]) => recallArgs(recipe));
+    expect(recipes).toEqual([
+      { sections: ['mitigations'] },
+      { sections: ['examples'], exampleLanguage: 'C', exampleOffset: 1, exampleLimit: 1 },
+    ]);
+    expect(lines(wire)).toContain(`> ${notice}`);
+    for (const args of recipes) {
+      const recall = await runToolContract(cweGetWeakness, { ids: ['79'], ...args });
+      expect(delivered(recall)).toBeLessThanOrEqual(24_000);
+      expect(entriesOf(recall)[0]?.kind).toBe('full');
+      expect(lines(recall)).toContain(
+        `> ${(args.sections as string[]).includes('examples') ? example : mitigation}`,
+      );
+    }
+  });
+  it('keeps a small combined omitted-section recall together', async () => {
+    await disposeCatalogService();
+    await load(
+      cwe
+        .replace('Conditional.', 'c'.repeat(10000))
+        .replace('Validate all fields.', 'm'.repeat(2000))
+        .replace('Before code.', 'unselected'.repeat(4000))
+        .replace('Second example.', 'e'.repeat(2000)),
+    );
+    const wire = await runToolContract(cweGetWeakness, { ids: ['79'], exampleOffset: 1 });
+    expect(entriesOf(wire)[0]?.notice).toContain(
+      'sections ["mitigations","relations","examples"], exampleOffset 1.',
+    );
+    const recall = await runToolContract(cweGetWeakness, {
+      ids: ['79'],
+      sections: ['mitigations', 'relations', 'examples'],
+      exampleOffset: 1,
+    });
+    expect(delivered(recall)).toBeLessThanOrEqual(24_000);
+    expect(lines(recall)).toContain(`> ${'m'.repeat(2000)}`);
+    expect(JSON.stringify(recall)).not.toContain('unselected');
+  });
+
+  it('splits CAPEC recalls in declared order and preserves an oversized section intact', async () => {
+    await disposeCatalogService();
+    const prerequisite = 'p'.repeat(6000);
+    const execution = 'e'.repeat(13000);
+    const mitigation = 'm'.repeat(6000);
+    await load(
+      cwe,
+      capec
+        .replace('Attack description.', 's'.repeat(7800))
+        .replace('First prerequisite.', prerequisite)
+        .replace('Use input.', execution)
+        .replace('Validate.', mitigation),
+    );
+    const wire = await runToolContract(cweGetAttackPattern, { ids: ['1'] });
+    const entry = entriesOf(wire)[0]!;
+    const notice = entry.notice as string;
+    const recipes = [
+      ...notice.matchAll(/Repeat cwe_get_attack_pattern with this ID and sections .*?(?=\. |\.$)/g),
+    ].map(([recipe]) => recalled(recipe));
+    expect(recipes).toEqual([['prerequisites'], ['execution'], ['mitigations']]);
+    expect((entry.outline as { section: string }[]).map(({ section }) => section)).toEqual(
+      recipes.flat(),
+    );
+    expect(lines(wire)).toContain(`> ${notice}`);
+    for (const sections of recipes) {
+      const recall = await runToolContract(cweGetAttackPattern, { ids: ['1'], sections });
+      expect(entriesOf(recall)[0]).toMatchObject({ kind: 'full', requestedSections: sections });
+      if (sections.includes('execution')) {
+        expect(delivered(recall)).toBeGreaterThan(24_000);
+        for (const surface of [recall.content, recall.structuredContent])
+          expect(JSON.stringify(surface)).toContain('returned intact');
+        expect(lines(recall)).toContain(`> ${execution}`);
+      } else expect(delivered(recall)).toBeLessThanOrEqual(24_000);
+    }
+  });
+  it('delivers nested prose quotes and empty lists intact on both surfaces', async () => {
+    await disposeCatalogService();
+    const prose =
+      '<xhtml:div style="margin-left:1em;"><xhtml:p>Quoted <xhtml:b>payload</xhtml:b>.</xhtml:p><xhtml:ul><xhtml:li><xhtml:ul><xhtml:li/><xhtml:li/></xhtml:ul></xhtml:li></xhtml:ul><xhtml:div style="margin-left:1em;">nested</xhtml:div></xhtml:div>';
+    await load(cwe.replace('Sparse description.', prose), capec.replace('First instance.', prose));
+    for (const [definition, input, field] of [
+      [cweGetWeakness, { ids: ['20'], sections: ['summary'] }, 'description'],
+      [cweGetAttackPattern, { ids: ['1'], sections: ['examples'] }, 'exampleInstances'],
+    ] as const) {
+      const wire = await runToolContract(definition, {
+        ids: [...input.ids],
+        sections: [...input.sections],
+      });
+      expect(wire.isError).not.toBe(true);
+      const stored = entriesOf(wire)[0]![field];
+      const markdown = Array.isArray(stored) ? (stored[0] as string) : (stored as string);
+      expect(parseMarkdown(markdown).text.trim()).toBe('Quoted payload.\nnested');
+      expect(parseMarkdown(markdown).nodes.filter((node) => node === 'block_quote')).toHaveLength(
+        2,
+      );
+      expect(parseMarkdown(markdown).nodes.filter((node) => node === 'list')).toHaveLength(2);
+      expect(parseMarkdown(markdown).nodes).not.toContain('thematic_break');
+      const document = wire.content
+        .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+        .join('\n');
+      expect(document).toContain(
+        markdown
+          .split('\n')
+          .map((line) => `> ${line}`)
+          .join('\n'),
+      );
+    }
+  });
+
   it('preserves every CWE section and ordered nested mixed-code examples', async () => {
     const result = await weakness({ ids: ['79'], sections: weaknessSections, exampleLimit: 100 });
     expect(cweGetWeakness.output.safeParse(result).success).toBe(true);

@@ -40,7 +40,7 @@ import { collapse } from './xml-normalization.js';
 
 /** Recovery also accompanies baseline upstream failures without changing their codes. */
 export const HIERARCHY_RECOVERY =
-  'Call cwe_get_weakness for recorded relations and cwe_list_reference with topic versions; retry cwe_get_hierarchy later.';
+  'Call cwe_get_weakness with sections ["relations"] for source-recorded relations and cwe_list_reference with topic versions. Recorded relations do not replace live children or descendants; retry cwe_get_hierarchy later.';
 /** Acquisition accepts canonical IDs and a captured immutable catalog. */
 export interface HierarchyInput {
   direction: HierarchyDirection;
@@ -305,7 +305,8 @@ export class HierarchyService {
     const expire = () =>
       deadline.abort(
         timeout('The hierarchy request exceeded its 25-second budget.', {
-          retryable: false,
+          reason: 'hierarchy_timeout',
+          retryable: true,
           recovery: { hint: HIERARCHY_RECOVERY },
         }),
       );
