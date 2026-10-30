@@ -30,13 +30,13 @@ import {
 export const cweGetHierarchy = tool('cwe_get_hierarchy', {
   title: 'Get CWE hierarchy',
   description:
-    'Navigate live CWE parents, children, ancestors, or descendants for a weakness, category, or view. Discover IDs with cwe_search_weaknesses or cwe_list_reference topic views. The default view is 1000; set viewId all for every view. primaryOnly applies only to ancestors. Edges point from parent to child and retain view identity; follow nextCursor for more edges. Continuations re-fetch the traversal and reject changed topology. Empty relations are successful; upstream failures remain errors. Node names come from the loaded catalog and may lag live IDs.',
+    'Navigate live CWE parents, children, ancestors, or descendants for a weakness, category, grouping, or view. Discover IDs with cwe_search_weaknesses or cwe_list_reference topic views. The default view is 1000; set viewId all for every view. primaryOnly applies only to ancestors. Edges point from parent to child and retain view identity; follow nextCursor for more edges. Continuations re-fetch the traversal and reject changed topology. Empty relations are successful; upstream failures remain errors. Node names come from the loaded catalog and may lag live IDs.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     id: z
       .string()
       .regex(CWE_ID, CWE_ID_FORMS)
-      .describe('CWE ID such as CWE-79 or 79, for a weakness, category, or view.'),
+      .describe('CWE ID such as CWE-79 or 79, for a weakness, category, grouping, or view.'),
     direction: inputEnum(['parents', 'children', 'ancestors', 'descendants']).describe(
       'Live hierarchy direction.',
     ),

@@ -331,7 +331,7 @@ describe('catalog indexes', () => {
     );
   });
 
-  it('names the reference topic for a long vocabulary and escapes the quoted value', () => {
+  it('names the reference topic for a long vocabulary and preserves the raw quoted value', () => {
     const languages = Array.from({ length: 11 }, (_, index) => `Language ${index}`);
     const technologies = Array.from({ length: 10 }, (_, index) => `Technology ${index}`);
     const data = snapshot([
@@ -347,7 +347,7 @@ describe('catalog indexes', () => {
     expect(() => resolveVocabulary(data, 'languages', 'language', '*Cobol*')).toThrow(
       expect.objectContaining({
         message:
-          'Unknown language "\\*Cobol\\*"; cwe_list_reference topic platforms lists the supported values.',
+          'Unknown language "*Cobol*"; cwe_list_reference topic platforms lists the supported values.',
         data: { reason: 'unknown_filter', retryable: false, field: 'language', value: '*Cobol*' },
       }),
     );

@@ -28,7 +28,10 @@ const FIELDS = new Map<string, Field>([
   ['@Structure', (entry) => [entry.structure]],
   [
     'Modes_Of_Introduction/Introduction/Phase',
-    (entry) => entry.modesOfIntroduction?.map((mode) => mode.phase) ?? [],
+    (entry) =>
+      entry.modesOfIntroduction
+        ?.filter((mode) => mode.domain === undefined)
+        .map((mode) => mode.phase) ?? [],
   ],
   [
     'Weakness_Ordinalities/Weakness_Ordinality/Ordinality',

@@ -12,6 +12,7 @@ import type {
   CapecCatalog,
   CapecGrouping,
   CatalogNote,
+  CatalogPhase,
   CatalogReference,
   CatalogView,
   Consequence,
@@ -1068,7 +1069,7 @@ function searchText(
 function optionalUrl(
   node: OrderedNode,
   name: string,
-  output: 'url' | 'link',
+  output: 'url' | 'link' | 'altUrl',
 ): Record<string, string> {
   const target = child(node, name);
   return target ? { [output]: plainText(target) } : {};
@@ -1110,6 +1111,65 @@ function textList(
   return arrayField(node, container, name, output, (entry) => convert(entry, output));
 }
 
+/** A sparse array of immediate string children, preserving empty source values and order. */
+function optionalTextList(node: OrderedNode, name: string, output: string) {
+  const entries = children(node, name);
+  return entries.length ? { [output]: entries.map(plainText) } : {};
+}
+
+/** Ordered dimensions retain both the source type label and its plain value. */
+function dimensions(node: OrderedNode) {
+  return arrayField(node, 'Dimensions', 'Dimension', 'dimensions', (entry) => ({
+    type: requiredAttribute(entry, 'Type'),
+    value: plainText(entry),
+  }));
+}
+
+/** Standard and custom phases share a value; only custom phases carry a required domain. */
+function phaseEntries(node: OrderedNode): CatalogPhase[] {
+  return contents(node).flatMap((entry) => {
+    const key = tag(entry);
+    const name = key && local(key);
+    if (name !== 'Phase' && name !== 'Custom_Phase') return [];
+    return [
+      {
+        phase: plainText(entry),
+        ...(name === 'Custom_Phase' ? { domain: requiredAttribute(entry, 'Domain') } : {}),
+      },
+    ];
+  });
+}
+
+/** Keep legacy string phases and add ordered domain metadata only when a custom phase occurs. */
+function phases(node: OrderedNode) {
+  const entries = phaseEntries(node);
+  return {
+    phases: entries.map((entry) => entry.phase),
+    ...(entries.some((entry) => entry.domain !== undefined) ? { phaseDetails: entries } : {}),
+  };
+}
+
+/** Schema 8 permits multiple phases or none; schema 7 still requires one standard phase. */
+function introductions(node: OrderedNode, schema8: boolean) {
+  if (!child(node, 'Modes_Of_Introduction')) return {};
+  const modes: NonNullable<Weakness['modesOfIntroduction']>[number][] = [];
+  const unphasedNotes: string[] = [];
+  for (const entry of nested(node, 'Modes_Of_Introduction', 'Introduction')) {
+    const note = optionalTexts(entry, { note: 'Note' });
+    if (!schema8) {
+      modes.push({ phase: requiredText(entry, 'Phase', 'phase'), ...note });
+      continue;
+    }
+    const entries = phaseEntries(entry);
+    for (const phase of entries) modes.push({ ...phase, ...note });
+    if (!entries.length && note.note !== undefined) unphasedNotes.push(note.note);
+  }
+  return {
+    modesOfIntroduction: modes,
+    ...(unphasedNotes.length ? { unphasedIntroductionNotes: unphasedNotes } : {}),
+  };
+}
+
 /**
  * Demonstrative examples with their prose and code blocks in source order. The schema places an
  * example's `References` last, so its citations sit beside the blocks without losing order.
@@ -1147,6 +1207,7 @@ function examples(
 function alternateTerms(node: OrderedNode): Record<string, AlternateTerm[]> {
   return arrayField(node, 'Alternate_Terms', 'Alternate_Term', 'alternateTerms', (entry) => ({
     term: requiredText(entry, 'Term', 'term'),
+    ...optionalTextList(entry, 'Role', 'roles'),
     ...optionalTexts(entry, { description: 'Description' }),
   }));
 }
@@ -1158,6 +1219,7 @@ function notes(node: OrderedNode): Record<string, CatalogNote[]> {
   return arrayField(node, 'Notes', 'Note', 'notes', (entry) => ({
     type: requiredAttribute(entry, 'Type'),
     text: convert(entry, 'text'),
+    ...optionalAttributes(entry, { version: 'Version', releaseDate: 'ReleaseDate' }),
   }));
 }
 /** Recorded ordinalities in source order: the value as plain text, its reason as prose. */
@@ -1200,8 +1262,13 @@ function externalReferences(root: OrderedNode): Map<string, CatalogReference> {
         publicationDay: 'Publication_Day',
         publisher: 'Publisher',
         urlDate: 'URL_Date',
+        altUrlDate: 'Alt_URL_Date',
+        accessRestrictions: 'Access_Restrictions',
       }),
       ...optionalUrl(entry, 'URL', 'url'),
+      ...optionalUrl(entry, 'Alt_URL', 'altUrl'),
+      ...optionalTextList(entry, 'Media_Type', 'mediaTypes'),
+      ...optionalTextList(entry, 'Rationale', 'rationales'),
       ...(children(entry, 'Author').length ? { authors: texts(entry, 'Author', 'authors') } : {}),
     };
     if (result.has(reference.id))
@@ -1224,6 +1291,7 @@ function members(node: OrderedNode, container: string): Member[] {
   return nested(node, container, 'Has_Member').map((entry) => ({
     id: id(entry, 'CWE', 'CWE_ID'),
     viewId: id(entry, 'CWE', 'View_ID'),
+    ...dimensions(entry),
   }));
 }
 const PLATFORM_KINDS = new Map<string, NonNullable<Weakness['platforms']>[number]['kind']>([
@@ -1236,17 +1304,21 @@ function normalizeWeakness(
   node: OrderedNode,
   type: Weakness['type'],
   external: ReadonlyMap<string, CatalogReference>,
+  schema8: boolean,
 ): Weakness {
   const entryId = id(node, 'CWE');
   const mappingNotes = child(node, 'Mapping_Notes');
   const platforms = child(node, 'Applicable_Platforms');
+  const technicalNuance = child(node, 'Technical_Nuance');
   return {
     id: entryId,
     type,
     name: requiredAttribute(node, 'Name'),
     status: requiredAttribute(node, 'Status'),
     sourceUrl: `https://cwe.mitre.org/data/definitions/${entryId.slice(4)}.html`,
-    description: requiredText(node, type === 'category' ? 'Summary' : 'Description', 'description'),
+    description: requiredText(node, type === 'weakness' ? 'Description' : 'Summary', 'description'),
+    ...(technicalNuance ? { technicalNuance: convert(technicalNuance, 'description') } : {}),
+    ...dimensions(node),
     ...optionalAttributes(node, { abstraction: 'Abstraction', structure: 'Structure' }),
     ...optionalTexts(node, {
       extendedDescription: 'Extended_Description',
@@ -1255,16 +1327,7 @@ function normalizeWeakness(
     ...ordinalities(node),
     ...textList(node, 'Background_Details', 'Background_Detail', 'backgroundDetails'),
     ...alternateTerms(node),
-    ...arrayField(
-      node,
-      'Modes_Of_Introduction',
-      'Introduction',
-      'modesOfIntroduction',
-      (entry) => ({
-        phase: requiredText(entry, 'Phase', 'phase'),
-        ...optionalTexts(entry, { note: 'Note' }),
-      }),
-    ),
+    ...introductions(node, schema8),
     ...(mappingNotes
       ? {
           mappingNotes: {
@@ -1281,7 +1344,7 @@ function normalizeWeakness(
       : {}),
     ...consequences(node, 'Common_Consequences'),
     ...arrayField(node, 'Potential_Mitigations', 'Mitigation', 'mitigations', (entry) => ({
-      phases: texts(entry, 'Phase', 'phases'),
+      ...phases(entry),
       description: requiredText(entry, 'Description', 'description'),
       ...optionalTexts(entry, {
         strategy: 'Strategy',
@@ -1294,6 +1357,7 @@ function normalizeWeakness(
       id: id(entry, 'CWE', 'CWE_ID'),
       viewId: id(entry, 'CWE', 'View_ID'),
       ...optionalAttributes(entry, { ordinal: 'Ordinal' }),
+      ...dimensions(entry),
     })),
     ...arrayField(
       node,
@@ -1306,6 +1370,7 @@ function normalizeWeakness(
     ...(child(node, 'Demonstrative_Examples') ? { examples: examples(node, external) } : {}),
     ...arrayField(node, 'Detection_Methods', 'Detection_Method', 'detectionMethods', (entry) => ({
       method: requiredText(entry, 'Method', 'method'),
+      ...(phaseEntries(entry).length ? phases(entry) : {}),
       ...optionalTexts(entry, {
         description: 'Description',
         effectiveness: 'Effectiveness',
@@ -1315,6 +1380,7 @@ function normalizeWeakness(
     ...arrayField(node, 'Observed_Examples', 'Observed_Example', 'observedExamples', (entry) => ({
       ...optionalTexts(entry, { reference: 'Reference', description: 'Description' }),
       ...optionalUrl(entry, 'Link', 'link'),
+      ...optionalTextList(entry, 'Rationale', 'rationales'),
     })),
     ...(platforms
       ? {
@@ -1330,6 +1396,7 @@ function normalizeWeakness(
                       class: 'Class',
                       prevalence: 'Prevalence',
                     }),
+                    ...optionalTexts(entry, { note: 'Note' }),
                   },
                 ]
               : [];
@@ -1468,7 +1535,7 @@ function normalizeCapecGrouping(
   };
 }
 
-function parseRoot(xml: string, name: string, namespace: string): OrderedNode {
+function parseRoot(xml: string, name: string, namespaces: readonly string[]): OrderedNode {
   if (/^\s*<(?:!doctype\s+html|html[\s>])/i.test(xml)) {
     throw serviceUnavailable('MITRE returned HTML instead of a catalog.', {
       reason: 'upstream_html',
@@ -1503,7 +1570,14 @@ function parseRoot(xml: string, name: string, namespace: string): OrderedNode {
   }
   const roots = nodes.filter((node) => tag(node) !== undefined);
   const root = roots[0];
-  if (roots.length !== 1 || !root || tag(root) !== name || attribute(root, 'xmlns') !== namespace)
+  const namespace = root && attribute(root, 'xmlns');
+  if (
+    roots.length !== 1 ||
+    !root ||
+    tag(root) !== name ||
+    namespace === undefined ||
+    !namespaces.includes(namespace)
+  )
     malformed('The MITRE catalog uses an unsupported root or schema namespace.');
   return root;
 }
@@ -1514,29 +1588,35 @@ function insert<T extends { id: string }>(map: Map<string, T>, entry: T): void {
 
 /** Parse and validate a complete CWE XML document without retaining its raw tree. */
 export function parseCweCatalog(xml: string): CweCatalog {
-  const root = parseRoot(xml, 'Weakness_Catalog', 'http://cwe.mitre.org/cwe-7');
+  const root = parseRoot(xml, 'Weakness_Catalog', [
+    'http://cwe.mitre.org/cwe-7',
+    'http://cwe.mitre.org/cwe-8',
+  ]);
+  const schema8 = attribute(root, 'xmlns') === 'http://cwe.mitre.org/cwe-8';
   const external = externalReferences(root);
   const weaknesses = new Map<string, Weakness>();
   const views = new Map<string, CatalogView>();
   const weaknessNodes = nested(root, 'Weaknesses', 'Weakness');
   const categoryNodes = nested(root, 'Categories', 'Category');
+  const groupingNodes = schema8 ? nested(root, 'Groupings', 'Grouping') : [];
   const viewNodes = nested(root, 'Views', 'View');
-  if (!weaknessNodes.length || !categoryNodes.length || !viewNodes.length)
+  if (!weaknessNodes.length || !(categoryNodes.length || groupingNodes.length) || !viewNodes.length)
     malformed('The CWE catalog is missing an expected record family.');
   const searchTexts = new Map<string, SearchText>();
   for (const [nodes, type] of [
     [weaknessNodes, 'weakness'],
     [categoryNodes, 'category'],
+    [groupingNodes, 'grouping'],
   ] as const)
     for (const node of nodes) {
-      const entry = normalizeWeakness(node, type, external);
+      const entry = normalizeWeakness(node, type, external, schema8);
       insert(weaknesses, entry);
       searchTexts.set(
         entry.id,
         searchText(
           node,
           entry.alternateTerms,
-          type === 'category' ? 'Summary' : 'Description',
+          type === 'weakness' ? 'Description' : 'Summary',
           'Extended_Description',
         ),
       );
@@ -1558,7 +1638,7 @@ export function parseCweCatalog(xml: string): CweCatalog {
 
 /** Parse and validate a complete CAPEC XML document. */
 export function parseCapecCatalog(xml: string): CapecCatalog {
-  const root = parseRoot(xml, 'Attack_Pattern_Catalog', 'http://capec.mitre.org/capec-3');
+  const root = parseRoot(xml, 'Attack_Pattern_Catalog', ['http://capec.mitre.org/capec-3']);
   const external = externalReferences(root);
   const attackPatterns = new Map<string, AttackPattern>();
   const searchTexts = new Map<string, SearchText>();

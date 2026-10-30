@@ -12,6 +12,8 @@ export const PROSE_FIELDS: ReadonlySet<string> = new Set([
   'descriptionPreview',
   'notice',
   'extendedDescription',
+  'technicalNuance',
+  'unphasedIntroductionNotes',
   'backgroundDetails',
   'note',
   'comments',

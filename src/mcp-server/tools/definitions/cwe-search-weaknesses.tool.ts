@@ -59,7 +59,7 @@ const filtersShape = {
     'Exact consequence impact; discover with cwe_list_reference topic filter_values.',
   ).optional(),
   status: text(
-    'Exact weakness status; discover with cwe_list_reference topic filter_values. A status only categories carry matches nothing. Omission includes all statuses, including Deprecated.',
+    'Exact weakness status; discover with cwe_list_reference topic filter_values. A status only categories or groupings carry matches nothing. Omission includes all statuses, including Deprecated.',
   ).optional(),
   mappingUsage: text(
     'Exact MITRE vulnerability mapping usage, such as Allowed or Allowed-with-Review; discover values with cwe_list_reference topic filter_values.',
@@ -99,7 +99,7 @@ function listFilters(entries: readonly (readonly [string, string])[]): string {
 
 /**
  * Disclose a filter-defined view's filter that cannot be evaluated, then explain a zero-hit search
- * by what emptied it: a status only categories carry, the view itself, the view beside the other
+ * by what emptied it: a status only categories or groupings carry, the view itself, the view beside the other
  * filters, taxonomy mapping and observed example filters that no weakness records together,
  * vocabulary filters, or text. A suggested repeat is always one that can return weaknesses, so a
  * zero-hit `viewId` search with other filters runs the view alone, or the other filters alone, when
@@ -130,13 +130,22 @@ function searchNotice(
       : undefined;
   if (matched) return unevaluated;
   // No other change returns weaknesses while this status applies, so it is the whole explanation.
-  if (filters.status !== undefined && categoryOnlyStatuses(snapshot).includes(filters.status))
+  if (filters.status !== undefined && categoryOnlyStatuses(snapshot).includes(filters.status)) {
+    const kinds = new Set(
+      [...snapshot.cwe.weaknesses.values()]
+        .filter((entry) => entry.status === filters.status)
+        .map((entry) => entry.type),
+    );
+    const families = [kinds.has('category') && 'categories', kinds.has('grouping') && 'groupings']
+      .filter(Boolean)
+      .join(' and ');
     return [
       unevaluated,
-      `Status ${escapeMarkdown(filters.status)} occurs only on CWE categories, which cwe_search_weaknesses excludes. Call cwe_list_reference with topic filter_values for the statuses weaknesses carry.`,
+      `Status ${escapeMarkdown(filters.status)} occurs only on CWE ${families}, which cwe_search_weaknesses excludes. Call cwe_list_reference with topic filter_values for the statuses weaknesses carry.`,
     ]
       .filter(Boolean)
       .join(' ');
+  }
   if (unevaluated) return unevaluated;
   if (viewId !== undefined) {
     if (!narrowed || !searchWeaknesses(snapshot, { viewId }).length)
@@ -170,7 +179,7 @@ function searchNotice(
 export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
   title: 'Search CWE weaknesses',
   description:
-    'Search CWE weaknesses by all text tokens, exact platform or consequence vocabulary, abstraction, status, mapping usage, view membership, a recorded taxonomy mapping (taxonomy name or entry ID such as CERT C ARR30-C), or a CVE that MITRE cites as an observed example. Text tokens match at word starts or camelCase humps; tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (trusted finds untrusted), with possible spelling coincidences. Search other compounds such as deserialization as written; text never matches an entry ID or CVE. Omit filters to browse; categories are excluded. Each result carries MITRE’s mapping usage, which says whether the entry may be used to map a vulnerability, and, under a taxonomy or CVE filter, every mapping or observed example that matched. Results order by all tokens in the name or in one recorded alternate term such as XSS, then all in the description, then any other match, then numeric ID. Description previews contain the first sentence; use cwe_get_weakness for complete sections. Follow nextCursor for remaining matches.',
+    'Search CWE weaknesses by all text tokens, exact platform or consequence vocabulary, abstraction, status, mapping usage, view membership, a recorded taxonomy mapping (taxonomy name or entry ID such as CERT C ARR30-C), or a CVE that MITRE cites as an observed example. Text tokens match at word starts or camelCase humps; tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (trusted finds untrusted), with possible spelling coincidences. Search other compounds such as deserialization as written; text never matches an entry ID or CVE. Omit filters to browse; categories and groupings are excluded. Each result carries MITRE’s mapping usage, which says whether the entry may be used to map a vulnerability, and, under a taxonomy or CVE filter, every mapping or observed example that matched. Results order by all tokens in the name or in one recorded alternate term such as XSS, then all in the description, then any other match, then numeric ID. Description previews contain the first sentence; use cwe_get_weakness for complete sections. Follow nextCursor for remaining matches.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({ ...filtersShape, ...pagingShape }),
   output: z.object({
@@ -282,7 +291,12 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
     const previews = matches.map((entry) => {
       // searchWeaknesses kept this weakness only when each applied test matches one of its entries.
       const matchedTaxonomyMappings = mapping && entry.taxonomyMappings?.filter(mapping);
-      const matchedObservedExamples = example && entry.observedExamples?.filter(example);
+      const matchedObservedExamples =
+        example &&
+        entry.observedExamples?.filter(example).map(({ rationales, ...observed }) => ({
+          ...observed,
+          ...(rationales ? { rationales: [...rationales] } : {}),
+        }));
       return {
         id: entry.id,
         name: entry.name,

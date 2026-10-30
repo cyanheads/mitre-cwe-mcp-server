@@ -131,7 +131,7 @@ function referenceItems(
         key: 'root-cause',
         label: 'CVE → CWE root cause',
         description:
-          'Search weaknesses by text, or with observedCveId for the weaknesses MITRE cites a CVE on as an observed example (absence does not mean no weakness applies), then use cwe_get_weakness for descriptions, mapping notes, and mitigations. Categories and views organize records and are not vulnerability root causes.',
+          'Search weaknesses by text, or with observedCveId for the weaknesses MITRE cites a CVE on as an observed example (absence does not mean no weakness applies), then use cwe_get_weakness for descriptions, mapping notes, and mitigations. Categories, groupings, and views organize records and are not vulnerability root causes.',
       },
       {
         key: 'mechanics',

@@ -94,6 +94,7 @@ function counts(catalog: CweCatalog | CapecCatalog): Record<string, number> {
       .length,
     categories: [...catalog.weaknesses.values()].filter((entry) => entry.type === 'category')
       .length,
+    groupings: [...catalog.weaknesses.values()].filter((entry) => entry.type === 'grouping').length,
     views: catalog.views.size,
   };
 }

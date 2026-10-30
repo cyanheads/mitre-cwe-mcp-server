@@ -5,7 +5,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { compileViewFilter, getCatalogService } from '@/services/index.js';
-import { notesSchema } from '../catalog-schemas.js';
+import { dimensionsSchema, notesSchema } from '../catalog-schemas.js';
 import {
   CWE_ID,
   catalogEnrichmentTrailer,
@@ -67,11 +67,12 @@ export const cweGetView = tool('cwe_get_view', {
           viewId: text('Recorded relationship view ID.'),
           name: text('Resolved member name.').optional(),
           type: z
-            .enum(['weakness', 'category', 'view'])
+            .enum(['weakness', 'category', 'grouping', 'view'])
             .describe('Resolved record family.')
             .optional(),
           abstraction: text('Source abstraction.').optional(),
           status: text('Source status.').optional(),
+          dimensions: dimensionsSchema.optional(),
         })
         .describe('Direct view member.'),
       'Direct members in source order.',
@@ -114,7 +115,12 @@ export const cweGetView = tool('cwe_get_view', {
       output: (page) => {
         const common = {
           id,
-          members: page.items.map((member) => ({ ...member })),
+          members: page.items.map(({ dimensions, ...member }) => ({
+            ...member,
+            ...(dimensions
+              ? { dimensions: dimensions.map((dimension) => ({ ...dimension })) }
+              : {}),
+          })),
           pagination: page.pagination,
           provenance: snapshot.provenance,
         };

@@ -6,6 +6,22 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { list, provenanceSchema, text } from './shared.js';
 
 const strings = (description: string) => list(text(description), description);
+/** Shared source dimensions on records, relations, and members. */
+export const dimensionsSchema = list(
+  z
+    .object({ type: text('Source dimension type.'), value: text('Source dimension value.') })
+    .describe('Recorded typed dimension.'),
+  'Recorded dimensions in source order.',
+);
+const phaseDetails = list(
+  z
+    .object({
+      phase: text('Source phase.'),
+      domain: text('Domain of a custom phase; absent for a standard phase.').optional(),
+    })
+    .describe('Ordered source phase with its custom domain when present.'),
+  'All source phases in order, including domain metadata when custom phases occur.',
+);
 const consequence = z
   .object({
     scopes: strings('Affected scopes.'),
@@ -18,12 +34,13 @@ const alternateTerms = list(
   z
     .object({
       term: text('Alternate name as recorded.'),
+      roles: strings('Recorded alternate-term roles in source order.').optional(),
       description: text('Source explanation of the term in CommonMark.').optional(),
     })
     .describe('Recorded alternate term.'),
   'Alternate terms MITRE records for this entry, in source order; absent when none are recorded.',
 );
-/** Shared by CWE weaknesses, categories, and views and CAPEC records. */
+/** Shared by CWE weaknesses, categories, groupings, and views and CAPEC records. */
 export const notesSchema = list(
   z
     .object({
@@ -31,6 +48,8 @@ export const notesSchema = list(
         'Source note type such as Relationship, Maintenance, Terminology, or Research Gap.',
       ),
       text: text('Complete note in CommonMark.'),
+      version: text('Source note version.').optional(),
+      releaseDate: text('Source note release date.').optional(),
     })
     .describe('Recorded MITRE note.'),
   'Notes MITRE records for this entry, in source order; absent when none are recorded.',
@@ -50,6 +69,7 @@ export const observedExampleSchema = z
     reference: text('Observed example reference.').optional(),
     description: text('Observed example description in CommonMark.').optional(),
     link: text('Observed example URL.').optional(),
+    rationales: strings('Source observed-example rationale labels.').optional(),
   })
   .describe('Observed example.');
 const reference = z
@@ -66,6 +86,11 @@ const reference = z
     title: text('Reference title.').optional(),
     url: text('Reference URL.').optional(),
     urlDate: text('URL access date.').optional(),
+    altUrl: text('Alternative reference URL.').optional(),
+    altUrlDate: text('Alternative URL access date.').optional(),
+    mediaTypes: strings('Source media-type labels.').optional(),
+    accessRestrictions: text('Source access-restriction label.').optional(),
+    rationales: strings('Source reference rationale labels.').optional(),
   })
   .describe('Resolved catalog reference.');
 const member = z
@@ -73,7 +98,11 @@ const member = z
     id: text('CWE member ID.'),
     viewId: text('Source relationship view ID.'),
     name: text('Resolved member name.').optional(),
-    type: z.enum(['weakness', 'category', 'view']).describe('Resolved member type.').optional(),
+    type: z
+      .enum(['weakness', 'category', 'grouping', 'view'])
+      .describe('Resolved member type.')
+      .optional(),
+    dimensions: dimensionsSchema.optional(),
     abstraction: text('Source abstraction.').optional(),
     status: text('Source status.').optional(),
   })
@@ -112,8 +141,10 @@ const identity = {
 export const weaknessEntrySchema = z
   .object({
     ...identity,
-    type: z.enum(['weakness', 'category']).describe('CWE record type.'),
+    type: z.enum(['weakness', 'category', 'grouping']).describe('CWE record type.'),
     description: text('Complete source description in CommonMark.').optional(),
+    technicalNuance: text('Complete technical nuance in CommonMark.').optional(),
+    dimensions: dimensionsSchema.optional(),
     extendedDescription: text('Complete extended description in CommonMark.').optional(),
     ordinalities: list(
       z
@@ -133,10 +164,14 @@ export const weaknessEntrySchema = z
       z
         .object({
           phase: text('Introduction phase.'),
+          domain: text('Source domain of a custom introduction phase.').optional(),
           note: text('Source phase note in CommonMark.').optional(),
         })
         .describe('Introduction phase.'),
       'Recorded modes of introduction.',
+    ).optional(),
+    unphasedIntroductionNotes: strings(
+      'Source notes on introductions with no phases, in CommonMark.',
     ).optional(),
     mappingNotes: z
       .object({
@@ -152,6 +187,7 @@ export const weaknessEntrySchema = z
       z
         .object({
           phases: strings('Mitigation phases.'),
+          phaseDetails: phaseDetails.optional(),
           description: text('Complete mitigation description in CommonMark.'),
           strategy: text('Mitigation strategy.').optional(),
           effectiveness: text('Source effectiveness.').optional(),
@@ -168,6 +204,7 @@ export const weaknessEntrySchema = z
           name: text('Resolved related weakness name.').optional(),
           viewId: text('Relationship view ID.'),
           ordinal: text('Source ordinal.').optional(),
+          dimensions: dimensionsSchema.optional(),
         })
         .describe('Recorded CWE relation.'),
       'Recorded weakness relations.',
@@ -178,7 +215,7 @@ export const weaknessEntrySchema = z
         .describe('Recorded CAPEC mapping.'),
       'Recorded CAPEC mappings.',
     ).optional(),
-    members: list(member, 'Direct category members in source order.').optional(),
+    members: list(member, 'Direct category or grouping members in source order.').optional(),
     examples: list(
       z
         .object({
@@ -230,6 +267,8 @@ export const weaknessEntrySchema = z
       z
         .object({
           method: text('Detection method.'),
+          phases: strings('Detection phases.').optional(),
+          phaseDetails: phaseDetails.optional(),
           description: text('Detection description in CommonMark.').optional(),
           effectiveness: text('Source effectiveness.').optional(),
           effectivenessNotes: text('Effectiveness notes in CommonMark.').optional(),
@@ -247,6 +286,7 @@ export const weaknessEntrySchema = z
           name: text('Source platform name.').optional(),
           class: text('Source platform class.').optional(),
           prevalence: text('Source prevalence.').optional(),
+          note: text('Source platform note in CommonMark.').optional(),
         })
         .describe('Applicable source platform.'),
       'Applicable platforms.',
@@ -259,7 +299,7 @@ export const weaknessEntrySchema = z
     references: list(reference, 'Resolved external references.').optional(),
     notes: notesSchema.optional(),
   })
-  .describe('Projected CWE weakness or category.');
+  .describe('Projected CWE weakness, category, or grouping.');
 const capecRecordType = z.enum(['attack_pattern', 'category', 'view']);
 const capecMember = z
   .object({

@@ -3,7 +3,6 @@
  * @module services/catalog/catalog-index
  */
 import { validationError } from '@cyanheads/mcp-ts-core/errors';
-import { escapeMarkdown } from './markdown-escape.js';
 import type {
   AttackPattern,
   CapecCatalog,
@@ -161,7 +160,7 @@ export function buildCatalogSnapshot(
     }
     for (const member of entry.members ?? []) addChild(member.viewId, entry.id, member.id);
   }
-  // Statuses only categories carry resolve as filter values but are never listed.
+  // Statuses only organizational records carry resolve as filter values but are never listed.
   const weaknessStatuses = vocabulary.get('cweStatuses') ?? [];
   addVocabulary(
     CATEGORY_ONLY_STATUSES,
@@ -284,7 +283,7 @@ export const REFERENCE_VOCABULARIES = {
 /** A loaded vocabulary that a reference topic lists. */
 export type VocabularyKey =
   (typeof REFERENCE_VOCABULARIES)[keyof typeof REFERENCE_VOCABULARIES][number];
-/** The unlisted vocabulary of CWE statuses that categories carry and no weakness does. */
+/** The unlisted vocabulary of CWE statuses that categories or groupings alone carry. */
 const CATEGORY_ONLY_STATUSES = 'cweCategoryOnlyStatuses';
 /** Vocabularies this short are listed in full in an `unknown_filter` message. */
 const LISTED_VOCABULARY = 10;
@@ -308,9 +307,9 @@ export function resolveVocabulary(
     (keys as readonly string[]).includes(key),
   )?.[0];
   throw validationError(
-    `Unknown ${field} "${escapeMarkdown(value)}"; ${
+    `Unknown ${field} "${value}"; ${
       listed
-        ? `supported values: ${supported.length ? supported.map((item) => escapeMarkdown(item)).join(', ') : 'none in the loaded catalog'}.`
+        ? `supported values: ${supported.length ? supported.join(', ') : 'none in the loaded catalog'}.`
         : `cwe_list_reference topic ${topic} lists the supported values.`
     }`,
     {
@@ -323,14 +322,14 @@ export function resolveVocabulary(
   );
 }
 
-/** CWE statuses that occur on categories and on no weakness, which search therefore never matches. */
+/** CWE statuses that occur only on categories or groupings, which weakness search never matches. */
 export function categoryOnlyStatuses(snapshot: CatalogSnapshot): readonly string[] {
   return snapshot.vocabulary.get(CATEGORY_ONLY_STATUSES) ?? [];
 }
 
 /**
- * Resolve a CWE status filter. A status that only categories carry is accepted, since search
- * excludes categories and an empty result is the correct answer, but it is never listed, so an
+ * Resolve a CWE status filter. A status that only organizational records carry is accepted, since
+ * weakness search excludes them and an empty result is correct, but it is never listed, so an
  * unknown status lists only the statuses weaknesses carry.
  */
 export function resolveWeaknessStatus(snapshot: CatalogSnapshot, value: string): string {

@@ -27,33 +27,52 @@ export interface TaxonomyMapping {
 
 /** A catalog reference resolved from its external reference definition. */
 export interface CatalogReference {
+  accessRestrictions?: string;
+  altUrl?: string;
+  altUrlDate?: string;
   authors?: readonly string[];
   edition?: string;
   id: string;
+  mediaTypes?: readonly string[];
   publication?: string;
   publicationDay?: string;
   publicationMonth?: string;
   publicationYear?: string;
   publisher?: string;
+  rationales?: readonly string[];
   section?: string;
   title?: string;
   url?: string;
   urlDate?: string;
 }
 
+/** A source dimension label and its value, retaining source order. */
+export interface CatalogDimension {
+  type: string;
+  value: string;
+}
+
+/** A standard lifecycle phase, or a custom phase with its source domain. */
+export interface CatalogPhase {
+  domain?: string;
+  phase: string;
+}
+
 /** A relationship to a catalog entry, retaining source order and view scope. */
 export interface Member {
   abstraction?: string;
+  dimensions?: readonly CatalogDimension[];
   id: string;
   name?: string;
   status?: string;
-  type?: 'weakness' | 'category' | 'view';
+  type?: Weakness['type'] | 'view';
   viewId: string;
 }
 
 /** Another name MITRE records for an entry: plain source text and optional CommonMark explanation. */
 export interface AlternateTerm {
   description?: string;
+  roles?: readonly string[];
   term: string;
 }
 
@@ -62,8 +81,10 @@ export interface AlternateTerm {
  * Relationship, Maintenance, or Terminology) and its CommonMark text.
  */
 export interface CatalogNote {
+  releaseDate?: string;
   text: string;
   type: string;
+  version?: string;
 }
 
 /** Whether a weakness is a root cause or a consequence: the source value and its optional reason. */
@@ -80,7 +101,7 @@ export interface Consequence {
   scopes: readonly string[];
 }
 
-/** A CWE weakness or category with sparse, complete normalized sections. */
+/** A CWE weakness, category, or grouping with sparse, complete normalized sections. */
 export interface Weakness {
   abstraction?: string;
   affectedResources?: readonly string[];
@@ -94,7 +115,10 @@ export interface Weakness {
     description?: string;
     effectiveness?: string;
     effectivenessNotes?: string;
+    phases?: readonly string[];
+    phaseDetails?: readonly CatalogPhase[];
   }[];
+  dimensions?: readonly CatalogDimension[];
   examples?: readonly DemonstrativeExample[];
   extendedDescription?: string;
   functionalAreas?: readonly string[];
@@ -109,21 +133,28 @@ export interface Weakness {
   members?: readonly Member[];
   mitigations?: readonly {
     phases: readonly string[];
+    phaseDetails?: readonly CatalogPhase[];
     description: string;
     strategy?: string;
     effectiveness?: string;
     effectivenessNotes?: string;
   }[];
-  modesOfIntroduction?: readonly { phase: string; note?: string }[];
+  modesOfIntroduction?: readonly (CatalogPhase & { note?: string })[];
   name: string;
   notes?: readonly CatalogNote[];
-  observedExamples?: readonly { reference?: string; description?: string; link?: string }[];
+  observedExamples?: readonly {
+    reference?: string;
+    description?: string;
+    link?: string;
+    rationales?: readonly string[];
+  }[];
   ordinalities?: readonly WeaknessOrdinality[];
   platforms?: readonly {
     kind: 'language' | 'technology' | 'OS' | 'architecture';
     name?: string;
     class?: string;
     prevalence?: string;
+    note?: string;
   }[];
   references?: readonly CatalogReference[];
   relatedAttackPatterns?: readonly { id: string; name?: string }[];
@@ -134,13 +165,17 @@ export interface Weakness {
     viewId: string;
     ordinal?: string;
     name?: string;
+    dimensions?: readonly CatalogDimension[];
   }[];
   sourceUrl: string;
   status: string;
   /** Source `Structure` attribute (Simple, Composite, Chain); indexed for view filters, never returned. */
   structure?: string;
   taxonomyMappings?: readonly TaxonomyMapping[];
-  type: 'weakness' | 'category';
+  technicalNuance?: string;
+  type: 'weakness' | 'category' | 'grouping';
+  /** Notes on schema-8 introductions with no phase children, in source order. */
+  unphasedIntroductionNotes?: readonly string[];
 }
 
 /** A CWE view and its direct, source-ordered members. */
@@ -246,7 +281,7 @@ export interface SearchText {
 
 /** Parsed CWE data before cross-catalog indexing. */
 export interface CweCatalog extends CatalogMetadata {
-  /** Keyed by weakness or category ID. */
+  /** Keyed by weakness, category, or grouping ID. */
   searchText: ReadonlyMap<string, SearchText>;
   views: ReadonlyMap<string, CatalogView>;
   weaknesses: ReadonlyMap<string, Weakness>;

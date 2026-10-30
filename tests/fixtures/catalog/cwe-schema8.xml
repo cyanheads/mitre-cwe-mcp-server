@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Weakness_Catalog xmlns="http://cwe.mitre.org/cwe-8" xmlns:xhtml="http://www.w3.org/1999/xhtml" Name="CWE" Version="5.test" Date="2026-10-28">
+  <Weaknesses>
+    <Weakness ID="1209" Name="Schema eight weakness" Status="Draft" Abstraction="Base" Structure="Simple">
+      <Description>Source description.</Description>
+      <Technical_Nuance><xhtml:p>Precise <xhtml:b>nuance</xhtml:b>.</xhtml:p><xhtml:p>Second paragraph.</xhtml:p></Technical_Nuance>
+      <Dimensions><Dimension Type="Behavior-Type"> Comparison </Dimension><Dimension Type="Code-Property">Incompatible</Dimension></Dimensions>
+      <Related_Weaknesses><Related_Weakness Nature="Overlaps" CWE_ID="1461" View_ID="1000"><Dimensions><Dimension Type="Resource-Type"> Memory </Dimension></Dimensions></Related_Weakness></Related_Weaknesses>
+      <Applicable_Platforms><Language Name="Algorithm" Prevalence="None"><Note>Platform <xhtml:i>caveat</xhtml:i>.</Note></Language><Operating_System Name="Other"/></Applicable_Platforms>
+      <Alternate_Terms><Alternate_Term><Term>Alt_name</Term><Role>Common-Name</Role><Role>Attack-Focused</Role><Description>Term <xhtml:b>meaning</xhtml:b>.</Description></Alternate_Term></Alternate_Terms>
+      <Modes_Of_Introduction>
+        <Introduction><Phase>Architecture and Design</Phase><Phase>Implementation</Phase><Note>Shared <xhtml:b>note</xhtml:b>.</Note></Introduction>
+        <Introduction><Custom_Phase Domain="AI">Training</Custom_Phase><Phase>Testing</Phase><Custom_Phase Domain="Hardware">Hardware Manufacturing</Custom_Phase><Note>Mixed.</Note></Introduction>
+      </Modes_Of_Introduction>
+      <Common_Consequences><Consequence><Scope>Availability</Scope><Impact>DoS: Prevent Access</Impact><Impact>Undefined Behavior</Impact></Consequence></Common_Consequences>
+      <Detection_Methods><Detection_Method><Method>Manual Analysis</Method><Phase>Testing</Phase><Custom_Phase Domain="AI">Prompting</Custom_Phase><Description>Inspect.</Description></Detection_Method><Detection_Method><Method>Other</Method><Description>No phases.</Description></Detection_Method></Detection_Methods>
+      <Potential_Mitigations><Mitigation><Custom_Phase Domain="AI">Training</Custom_Phase><Phase>Implementation</Phase><Custom_Phase Domain="AI">Output Processing</Custom_Phase><Description>Mitigate.</Description></Mitigation><Mitigation><Phase>Testing</Phase><Description>Standard.</Description></Mitigation></Potential_Mitigations>
+      <Observed_Examples><Observed_Example><Reference>CVE-2026-1234</Reference><Description>Example.</Description><Link>https://example.test/observed</Link><Rationale>Chain</Rationale><Rationale>Early-Publication</Rationale></Observed_Example></Observed_Examples>
+      <Taxonomy_Mappings><Taxonomy_Mapping Taxonomy_Name="PLC Top 20"><Entry_ID>1</Entry_ID></Taxonomy_Mapping></Taxonomy_Mappings>
+      <References><Reference External_Reference_ID="REF-8" Section="2"/></References>
+      <Mapping_Notes><Usage>Allowed</Usage><Reasons><Reason Type="Frequently-Resultant"/></Reasons></Mapping_Notes>
+      <Notes><Note Type="Maintenance" Version="5.0" ReleaseDate="2026-10-28">Maintenance <xhtml:b>note</xhtml:b>.</Note></Notes>
+    </Weakness>
+    <Weakness ID="1461" Name="Custom only" Status="Incomplete" Abstraction="Base"><Description>Hardware.</Description><Modes_Of_Introduction><Introduction><Custom_Phase Domain="Hardware">Implementation &amp; Physical Design</Custom_Phase><Note>Hardware note.</Note></Introduction></Modes_Of_Introduction></Weakness>
+  </Weaknesses>
+  <Groupings>
+    <Grouping ID="900" Name="Grouping" Status="Stable"><Summary>Organizational <xhtml:b>summary</xhtml:b>.</Summary><Relationships><Has_Member CWE_ID="901" View_ID="1000"><Dimensions><Dimension Type="Technology">Hardware</Dimension></Dimensions></Has_Member></Relationships><References><Reference External_Reference_ID="REF-8"/></References><Mapping_Notes><Usage>Prohibited</Usage><Reasons><Reason Type="Grouping"/></Reasons></Mapping_Notes><Notes><Note Type="Maintenance" Version="5.0">Grouping note.</Note></Notes></Grouping>
+    <Grouping ID="901" Name="Nested grouping" Status="Incomplete"><Summary>Nested.</Summary><Relationships><Has_Member CWE_ID="1209" View_ID="1000"/></Relationships><Mapping_Notes><Usage>Prohibited</Usage></Mapping_Notes></Grouping>
+  </Groupings>
+  <Views><View ID="1000" Name="Navigation" Type="Graph" Status="Stable"><Objective>Explore.</Objective><Members><Has_Member CWE_ID="900" View_ID="1000"><Dimensions><Dimension Type="Resource-Type">Device</Dimension></Dimensions></Has_Member></Members><Notes><Note Type="Maintenance" Version="5.0" ReleaseDate="2026-10-28">View note.</Note></Notes></View></Views>
+  <External_References><External_Reference Reference_ID="REF-8"><Title>Source</Title><URL>https://example.test/source</URL><Alt_URL>https://example.test/alt_a?q=1&amp;b=2</Alt_URL><Alt_URL_Date>2026-10-23</Alt_URL_Date><Media_Type>Video</Media_Type><Media_Type>Text</Media_Type><Access_Restrictions>Minimal-Registration</Access_Restrictions><Rationale>Early-Publication</Rationale><Rationale>Other</Rationale></External_Reference></External_References>
+</Weakness_Catalog>

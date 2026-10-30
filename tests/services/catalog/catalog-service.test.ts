@@ -476,6 +476,124 @@ describe('CatalogService last-known-good cache', () => {
   const urls = (request: ReturnType<typeof vi.fn<HttpRequest>>) =>
     request.mock.calls.map(([url]) => url);
   const SAVE_FAILED = 'Could not save the MITRE catalog to the cache directory.';
+
+  it('cold-starts schema 8 and reloads its exact cached bytes without network access', async () => {
+    const dir = await tempDir();
+    const bytes = zipSync({
+      'cwe.xml': strToU8(
+        readFileSync(new URL('../../fixtures/catalog/cwe-schema8.xml', import.meta.url), 'utf8'),
+      ),
+    });
+    const first = cached(servingRequest(bytes, capecBytes(), '5.test'), dir);
+    await first.start();
+    expect(first.snapshot().health.cwe.counts).toEqual({
+      weaknesses: 2,
+      categories: 0,
+      groupings: 2,
+      views: 1,
+    });
+    expect(first.snapshot().cwe.weaknesses.get('CWE-900')?.type).toBe('grouping');
+    await first.dispose();
+    const request = refusing();
+    const restart = cached(request, dir);
+    await restart.start();
+    expect(request).not.toHaveBeenCalled();
+    expect(restart.snapshot().health.cwe).toMatchObject({
+      source: 'cache',
+      version: '5.test',
+      counts: { groupings: 2, categories: 0 },
+    });
+    expect(restart.snapshot().cwe.weaknesses.get('CWE-1209')?.technicalNuance).toBe(
+      'Precise **nuance**.\n\nSecond paragraph.',
+    );
+    expect(new Uint8Array(await readFile(join(dir, CWE_FILE)))).toEqual(bytes);
+  });
+
+  it('atomically refreshes cached schema 7 to schema 8 and retains schema 8 after an invalid replacement', async () => {
+    const dir = await seededDir();
+    const clock = new Clock();
+    const schema8 = readFileSync(
+      new URL('../../fixtures/catalog/cwe-schema8.xml', import.meta.url),
+      'utf8',
+    );
+    let release: ((response: Response) => void) | undefined;
+    let invalid = false;
+    const request: HttpRequest = async (url) => {
+      if (url === SOURCE_URLS.cweVersion)
+        return Response.json({
+          ContentVersion: invalid ? 'future' : '5.test',
+          ContentDate: 'api-date',
+        });
+      if (url === SOURCE_URLS.capec) return new Response(null, { status: 304 });
+      if (url === SOURCE_URLS.cwe) {
+        if (invalid)
+          return new Response(zipSync({ 'cwe.xml': strToU8(schema8.replace('cwe-8', 'cwe-9')) }));
+        return new Promise<Response>((resolve) => {
+          release = resolve;
+        });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    };
+    const catalog = cached(request, dir, clock);
+    await catalog.start();
+    const before = catalog.snapshot();
+    expect(before.cwe.version).toBe('4.test');
+    const refreshing = catalog.refresh();
+    for (let hop = 0; hop < 20 && !release; hop++) await Promise.resolve();
+    expect(release).toBeTypeOf('function');
+    expect(catalog.snapshot()).toBe(before);
+    release!(new Response(zipSync({ 'cwe.xml': strToU8(schema8) })));
+    await refreshing;
+    const current = catalog.snapshot();
+    expect(current.cwe.version).toBe('5.test');
+    expect(current.cwe.weaknesses.get('CWE-900')?.type).toBe('grouping');
+    expect(before.cwe.weaknesses.get('CWE-900')?.type).toBe('category');
+    expect(before.cwe.version).toBe('4.test');
+    invalid = true;
+    clock.time += REFRESH_INTERVALS.cwe;
+    await catalog.refresh();
+    expect(catalog.snapshot().cwe.weaknesses.get('CWE-900')).toEqual({
+      id: 'CWE-900',
+      type: 'grouping',
+      name: 'Grouping',
+      description: 'Organizational **summary**.',
+      status: 'Stable',
+      sourceUrl: 'https://cwe.mitre.org/data/definitions/900.html',
+      members: [
+        {
+          id: 'CWE-901',
+          viewId: 'CWE-1000',
+          dimensions: [{ type: 'Technology', value: 'Hardware' }],
+          name: 'Nested grouping',
+          type: 'grouping',
+          status: 'Incomplete',
+        },
+      ],
+      references: [
+        {
+          id: 'REF-8',
+          title: 'Source',
+          url: 'https://example.test/source',
+          altUrl: 'https://example.test/alt_a?q=1&b=2',
+          altUrlDate: '2026-10-23',
+          mediaTypes: ['Video', 'Text'],
+          accessRestrictions: 'Minimal-Registration',
+          rationales: ['Early-Publication', 'Other'],
+        },
+      ],
+      mappingNotes: { usage: 'Prohibited', reasons: ['Grouping'] },
+      notes: [{ type: 'Maintenance', version: '5.0', text: 'Grouping note.' }],
+    });
+    expect(catalog.snapshot().health.cwe).toMatchObject({
+      version: '5.test',
+      lastRefreshError: {
+        message: 'The catalog refresh failed; the previously loaded catalog is retained.',
+      },
+    });
+    const restart = cached(refusing(), dir);
+    await restart.start();
+    expect(restart.snapshot().cwe.version).toBe('5.test');
+  });
   /** Logged warnings as `<source>: <message>`, sorted because both sources load concurrently. */
   const warnings = (calls: Parameters<typeof logger.warning>[]) =>
     calls

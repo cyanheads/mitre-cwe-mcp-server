@@ -115,7 +115,8 @@ function hydrate(raw: RawNode, snapshot: CatalogSnapshot): HierarchyNode {
   const known = record(id, snapshot);
   return {
     id,
-    type: raw.Type,
+    // The live API still calls schema-8 groupings categories; the loaded catalog owns their identity.
+    type: raw.Type === 'category' && known?.type === 'grouping' ? known.type : raw.Type,
     viewId: `CWE-${raw.ViewID}`,
     ...(known ? { name: known.name, status: known.status, sourceUrl: known.sourceUrl } : {}),
     ...(known && 'abstraction' in known && known.abstraction !== undefined
@@ -322,7 +323,7 @@ export class HierarchyService {
       const remainingMs = 25000 - (this.clock.now() - started);
       if (remainingMs <= 0) expire();
       signal.throwIfAborted();
-      // Unscoped children rows carry no ViewID, and scoped parents omit category and view parents.
+      // Unscoped children rows carry no ViewID, and scoped parents omit organizational-record parents.
       const path =
         input.direction === 'children' && input.viewId === 'all' ? 'descendants' : input.direction;
       const url = new URL(`${SOURCE_URLS.hierarchy}/${input.id.slice(4)}/${path}`);
