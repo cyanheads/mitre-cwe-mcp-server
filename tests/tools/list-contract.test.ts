@@ -660,12 +660,13 @@ describe('complete local search and view contracts', () => {
       const { error } = wire.structuredContent as {
         error: { message: string; data: Record<string, unknown> };
       };
-      expect(parseMarkdown(error.message).text).toBe(visible);
-      expect(parseMarkdown(error.message).nodes).not.toContain('link');
+      expect(error.message).toBe(visible);
       expect(error.data).toMatchObject({ reason: 'unknown_filter', field, supported });
       expect(error.data.value).toBe(Object.values(args)[0]?.trim());
       expect(error.data).not.toHaveProperty('vocabulary');
-      expect(lines(wire)).toContain(`Error: ${error.message}`);
+      const rendered = parseMarkdown(lines(wire).join('\n'));
+      expect(rendered.text).toContain(`Error: ${visible}`);
+      expect(rendered.nodes).not.toContain('link');
     }
     for (const [viewId, visible] of [
       ['10', 'viewId CWE-10 is a weakness, not a CWE view.'],
@@ -1945,17 +1946,17 @@ describe('identifier grammar', () => {
       if (cwe.has(form)) expect(view.isError, label).not.toBe(true);
       else {
         expect(view.structuredContent, label).toMatchObject({ error: { code: -32602 } });
-        for (const surface of [view.content, view.structuredContent])
-          expect(JSON.stringify(surface), label).toContain(`id: ${VIEW_ID_FORMS}`);
+        expect(parseMarkdown(lines(view).join('\n')).text, label).toContain(`id: ${VIEW_ID_FORMS}`);
+        expect(JSON.stringify(view.structuredContent), label).toContain(`id: ${VIEW_ID_FORMS}`);
       }
       const mapping = await runToolContract(cweSearchAttackPatterns, { cweId: form });
       expect(mapping.isError === true, label).toBe(!cwe.has(form) && !blank.has(form));
       if (mapping.isError)
-        expect(JSON.stringify(mapping.content)).toContain(`cweId: ${CWE_ID_FORMS}`);
+        expect(parseMarkdown(lines(mapping).join('\n')).text).toContain(`cweId: ${CWE_ID_FORMS}`);
       const technique = await runToolContract(cweSearchAttackPatterns, { attackTechniqueId: form });
       expect(technique.isError === true, label).toBe(!attack.has(form) && !blank.has(form));
       if (technique.isError)
-        expect(JSON.stringify(technique.content)).toContain(
+        expect(parseMarkdown(lines(technique).join('\n')).text).toContain(
           `attackTechniqueId: ${ATTACK_ID_FORMS}`,
         );
       // A well-formed ID that names no view fails as unknown_filter, never as a malformed argument.
@@ -1972,8 +1973,12 @@ describe('identifier grammar', () => {
       else if (blank.has(form)) expect(cited.isError, label).not.toBe(true);
       else {
         expect(cited.structuredContent, label).toMatchObject({ error: { code: -32602 } });
-        for (const surface of [cited.content, cited.structuredContent])
-          expect(JSON.stringify(surface), label).toContain(`observedCveId: ${CVE_ID_FORMS}`);
+        expect(parseMarkdown(lines(cited).join('\n')).text, label).toContain(
+          `observedCveId: ${CVE_ID_FORMS}`,
+        );
+        expect(JSON.stringify(cited.structuredContent), label).toContain(
+          `observedCveId: ${CVE_ID_FORMS}`,
+        );
       }
     }
     // Integer transport values, as JSON delivers them, are still repaired before the pattern applies.

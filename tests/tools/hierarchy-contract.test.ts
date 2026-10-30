@@ -17,6 +17,7 @@ import {
   initHierarchyService,
   SOURCE_URLS,
 } from '@/services/index.js';
+import { parseMarkdown } from '../helpers/commonmark.js';
 
 const clock: CatalogClock = {
   now: () => Date.parse('2026-10-20T00:00:00Z'),
@@ -152,7 +153,7 @@ describe('cwe_get_hierarchy public contracts', () => {
           'Recorded relations do not replace live children or descendants',
         );
       }
-      expect(lines(wire).join('\n')).toContain(
+      expect(parseMarkdown(lines(wire).join('\n')).text).toContain(
         'Call cwe_get_weakness with sections ["relations"] for source-recorded relations and cwe_list_reference with topic versions. Recorded relations do not replace live children or descendants; retry cwe_get_hierarchy later.',
       );
     }

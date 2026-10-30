@@ -1,0 +1,36 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mitre-cwe-mcp-server",
+  "version": "0.1.4",
+  "description": "Explore MITRE CWE weaknesses and CAPEC attack patterns, mitigations, code examples, and mappings via MCP. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/mitre-cwe-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/mitre-cwe-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "ai-agents",
+    "ai-tools",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
+    "cyanheads",
+    "mitre",
+    "cwe",
+    "capec",
+    "application-security",
+    "weaknesses",
+    "attack-patterns",
+    "cybersecurity",
+    "vulnerability",
+    "secure-coding",
+    "threat-modeling"
+  ]
+}
