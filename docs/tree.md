@@ -1,6 +1,6 @@
 # mitre-cwe-mcp-server - Directory Structure
 
-Generated on: 2026-10-23 04:13:43
+Generated on: 2026-10-30 09:42:38
 
 ```text
 mitre-cwe-mcp-server/
@@ -25,6 +25,7 @@ mitre-cwe-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   └── design.md
@@ -36,6 +37,8 @@ mitre-cwe-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -133,6 +136,9 @@ mitre-cwe-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── mitre-cwe-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -168,7 +174,8 @@ mitre-cwe-mcp-server/
 │   ├── fixtures/
 │   │   ├── catalog/
 │   │   │   ├── capec-normalization.xml
-│   │   │   └── cwe-normalization.xml
+│   │   │   ├── cwe-normalization.xml
+│   │   │   └── cwe-schema8.xml
 │   │   └── hierarchy/
 │   │       ├── cwe-1003-children-view-1003-viewid.json
 │   │       ├── cwe-1003-children-view-1003.json
@@ -182,6 +189,8 @@ mitre-cwe-mcp-server/
 │   ├── helpers/
 │   │   ├── commonmark.ts
 │   │   └── cpu-timing.ts
+│   ├── scripts/
+│   │   └── bundle-agent-docs.test.ts
 │   ├── services/
 │   │   └── catalog/
 │   │       ├── acquisition.test.ts
@@ -189,6 +198,7 @@ mitre-cwe-mcp-server/
 │   │       ├── catalog-service.test.ts
 │   │       ├── hierarchy-service.test.ts
 │   │       ├── markdown-escape.test.ts
+│   │       ├── schema-compatibility.test.ts
 │   │       ├── view-filter.test.ts
 │   │       └── xml-normalization.test.ts
 │   └── tools/
@@ -196,7 +206,8 @@ mitre-cwe-mcp-server/
 │       ├── hierarchy-contract.test.ts
 │       ├── link-format.test.ts
 │       ├── list-contract.test.ts
-│       └── response-budget.test.ts
+│       ├── response-budget.test.ts
+│       └── schema8-contract.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
@@ -212,7 +223,9 @@ mitre-cwe-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── THIRD_PARTY_NOTICES.md
