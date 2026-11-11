@@ -24,7 +24,7 @@ import {
 export const cweGetWeakness = tool('cwe_get_weakness', {
   title: 'Retrieve CWE weaknesses',
   description:
-    'Retrieve CWE weaknesses, categories, or groupings by ID, such as CWE-79, CWE79, or 79. Processes up to 20 distinct IDs within a 24,000-byte response budget and discloses deferred IDs; a view, a CAPEC ID, or an item that is no ID returns in notFound with recovery guidance; only an item holding a control character other than whitespace, or a non-ID item over 150 characters, rejects the whole call. Defaults to summary, consequences, mitigations, and relations; a default section that does not fit the budget is omitted whole and named with its size and a re-call (kind partial). Summary carries recorded alternate terms such as XSS, ordinalities (Primary, Resultant, Indirect), and background details; the notes section, outside the defaults, returns every note MITRE records, such as Relationship, Maintenance, Terminology, and Research Gap notes. Explicit sections remain complete, including one oversized record with disclosure; an empty sections array requests an outline. exampleLanguage, exampleOffset, and exampleLimit select a complete source-ordered page of section examples: with sections omitted, setting any of them to a non-default value adds examples after the defaults, filled last and outlined with its page size and a re-call when it does not fit; explicit sections without examples ignore them, and guidance gives the re-call that adds examples. Categories and groupings are organizational entries, not vulnerability root causes.',
+    'Retrieve CWE weaknesses, categories, or groupings by ID, such as CWE-79, CWE79, or 79. Processes the first 20 distinct positions in submission order and lists later positions in deferredIds; a view, a CAPEC ID, or an item that is no ID returns in notFound with recovery guidance; only an item holding a control character other than whitespace, or a non-ID item over 150 characters, rejects the whole call. Defaults to summary, consequences, mitigations, and relations. Summary carries recorded alternate terms such as XSS, ordinalities (Primary, Resultant, Indirect), and background details; the notes section, outside the defaults, returns every note MITRE records, such as Relationship, Maintenance, Terminology, and Research Gap notes. Selected sections are complete; an empty sections array requests an outline with section sizes. exampleLanguage, exampleOffset, and exampleLimit select a complete source-ordered page of section examples: with sections omitted, setting any of them to a non-default value adds examples after the defaults; explicit sections without examples ignore them, and guidance gives the re-call that adds examples. Categories and groupings are organizational entries, not vulnerability root causes.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     ids: idsSchema('CWE'),
@@ -55,13 +55,10 @@ export const cweGetWeakness = tool('cwe_get_weakness', {
   output: batchOutput(weaknessEntrySchema),
   enrichment: {
     totalCount: z.number().int().describe('Distinct submitted identifiers before the batch cap.'),
-    truncated: z
-      .boolean()
-      .describe('Whether the count or response budget deferred identifiers.')
-      .optional(),
+    truncated: z.boolean().describe('Whether the 20-position cap deferred identifiers.').optional(),
     shown: z.number().int().describe('Identifiers processed.').optional(),
     cap: z.number().int().describe('Maximum identifiers processed per call.').optional(),
-    notice: text('Whole-identifier continuation and budget disclosure.').optional(),
+    notice: text('How to continue with deferred IDs.').optional(),
   },
   enrichmentTrailer: detailEnrichmentTrailer,
   errors: [

@@ -17,6 +17,7 @@ import {
   cweListReference,
   referenceTopics,
 } from '@/mcp-server/tools/definitions/cwe-list-reference.tool.js';
+import { cweSearchAttackPatterns } from '@/mcp-server/tools/definitions/cwe-search-attack-patterns.tool.js';
 import { cweSearchWeaknesses } from '@/mcp-server/tools/definitions/cwe-search-weaknesses.tool.js';
 import { attackPatternSections, weaknessSections } from '@/mcp-server/tools/detail-projection.js';
 import { formatCatalog, pageItems } from '@/mcp-server/tools/shared.js';
@@ -102,30 +103,15 @@ function copiedList(wire: Wire, key: string): string[] {
     values.push(all[index + 2]?.replace(/^> /, '') ?? '');
   return values;
 }
-/** Serialized bytes of both surfaces, enrichment included: what the response budget measures. */
-const delivered = (wire: Wire) => Buffer.byteLength(JSON.stringify(wire), 'utf8');
 const entriesOf = (wire: Wire) =>
   (wire.structuredContent as { entries: Record<string, unknown>[] }).entries;
 /** The sections a notice or guidance re-call says to request, as a caller reads them from the text. */
 const recalled = (notice: string) =>
   JSON.parse(/sections (\[[^\]]*\])/.exec(notice)?.[1] ?? 'null') as string[];
-/** Every argument a partial entry's notice re-call names: its sections, then each example parameter. */
-function recallArgs(notice: string): Record<string, unknown> {
-  const tail = notice.slice(notice.indexOf(']', notice.indexOf('sections [')) + 1);
-  const args: Record<string, unknown> = { sections: recalled(notice) };
-  for (const [, key, value] of tail.matchAll(/(example\w+) ("[^"]*"|\d+)/g))
-    args[key as string] = JSON.parse(value as string);
-  return args;
-}
 /** Delivered size of one section: its structured JSON plus its rendered `content[]` text. */
 const sectionBytes = (fields: Record<string, unknown>) =>
   Buffer.byteLength(JSON.stringify(fields)) +
   Buffer.byteLength(JSON.stringify(formatCatalog(fields)[0].text));
-/** A one-section outline as `content[]` renders it; requestedSections never renders these labels. */
-const outlineText = (entry: Record<string, unknown>) => {
-  const [{ section, sizeInBytes }] = entry.outline as [{ section: string; sizeInBytes: number }];
-  return `**outline**\n\n**1**\n\n**section**\n\n> ${section}\n\n**sizeInBytes**\n\n${sizeInBytes}`;
-};
 beforeEach(async () => {
   await load();
 });
@@ -134,13 +120,14 @@ afterEach(async () => {
 });
 
 describe('complete detail contracts', () => {
-  it('splits omitted recalls by their complete response and keeps example arguments on their group', async () => {
+  it('returns large default sections and the selected example page together', async () => {
     await disposeCatalogService();
+    const consequence = 'c'.repeat(7800);
     const mitigation = 'm'.repeat(6000);
     const example = 'e'.repeat(6000);
     await load(
       cwe
-        .replace('Conditional.', 'c'.repeat(7800))
+        .replace('Conditional.', consequence)
         .replace('Validate all fields.', mitigation)
         .replace(
           '<Body_Text>Second example.</Body_Text>',
@@ -153,82 +140,29 @@ describe('complete detail contracts', () => {
       exampleOffset: 1,
       exampleLimit: 1,
     });
-    const notice = entriesOf(wire)[0]?.notice as string;
-    const recipes = [
-      ...notice.matchAll(/Repeat cwe_get_weakness with this ID and sections .*?(?=\. |\.$)/g),
-    ].map(([recipe]) => recallArgs(recipe));
-    expect(recipes).toEqual([
-      { sections: ['mitigations'] },
-      { sections: ['examples'], exampleLanguage: 'C', exampleOffset: 1, exampleLimit: 1 },
-    ]);
-    expect(lines(wire)).toContain(`> ${notice}`);
-    for (const args of recipes) {
-      const recall = await runToolContract(cweGetWeakness, { ids: ['79'], ...args });
-      expect(delivered(recall)).toBeLessThanOrEqual(24_000);
-      expect(entriesOf(recall)[0]?.kind).toBe('full');
-      expect(lines(recall)).toContain(
-        `> ${(args.sections as string[]).includes('examples') ? example : mitigation}`,
-      );
-    }
-  });
-  it('keeps a small combined omitted-section recall together', async () => {
-    await disposeCatalogService();
-    await load(
-      cwe
-        .replace('Conditional.', 'c'.repeat(10000))
-        .replace('Validate all fields.', 'm'.repeat(2000))
-        .replace('Before code.', 'unselected'.repeat(4000))
-        .replace('Second example.', 'e'.repeat(2000)),
-    );
-    const wire = await runToolContract(cweGetWeakness, { ids: ['79'], exampleOffset: 1 });
-    expect(entriesOf(wire)[0]?.notice).toContain(
-      'sections ["mitigations","relations","examples"], exampleOffset 1.',
-    );
-    const recall = await runToolContract(cweGetWeakness, {
-      ids: ['79'],
-      sections: ['mitigations', 'relations', 'examples'],
-      exampleOffset: 1,
+    expect(wire.isError).not.toBe(true);
+    expect(entriesOf(wire)[0]).toMatchObject({
+      kind: 'full',
+      requestedSections: ['summary', 'consequences', 'mitigations', 'relations', 'examples'],
+      consequences: [{ note: consequence }],
+      mitigations: [{ description: mitigation }],
+      relatedWeaknesses: [{ id: 'CWE-20' }],
+      examples: [
+        {
+          index: 1,
+          blocks: [
+            { kind: 'prose', text: example },
+            { kind: 'code', text: 'second();' },
+          ],
+        },
+      ],
+      examplePage: { total: 2, shown: 1, offset: 1, hasMore: false },
     });
-    expect(delivered(recall)).toBeLessThanOrEqual(24_000);
-    expect(lines(recall)).toContain(`> ${'m'.repeat(2000)}`);
-    expect(JSON.stringify(recall)).not.toContain('unselected');
+    expect(entriesOf(wire)[0]).not.toHaveProperty('outline');
+    for (const line of [consequence, mitigation, example])
+      expect(lines(wire)).toContain(`> ${line}`);
   });
 
-  it('splits CAPEC recalls in declared order and preserves an oversized section intact', async () => {
-    await disposeCatalogService();
-    const prerequisite = 'p'.repeat(6000);
-    const execution = 'e'.repeat(13000);
-    const mitigation = 'm'.repeat(6000);
-    await load(
-      cwe,
-      capec
-        .replace('Attack description.', 's'.repeat(7800))
-        .replace('First prerequisite.', prerequisite)
-        .replace('Use input.', execution)
-        .replace('Validate.', mitigation),
-    );
-    const wire = await runToolContract(cweGetAttackPattern, { ids: ['1'] });
-    const entry = entriesOf(wire)[0]!;
-    const notice = entry.notice as string;
-    const recipes = [
-      ...notice.matchAll(/Repeat cwe_get_attack_pattern with this ID and sections .*?(?=\. |\.$)/g),
-    ].map(([recipe]) => recalled(recipe));
-    expect(recipes).toEqual([['prerequisites'], ['execution'], ['mitigations']]);
-    expect((entry.outline as { section: string }[]).map(({ section }) => section)).toEqual(
-      recipes.flat(),
-    );
-    expect(lines(wire)).toContain(`> ${notice}`);
-    for (const sections of recipes) {
-      const recall = await runToolContract(cweGetAttackPattern, { ids: ['1'], sections });
-      expect(entriesOf(recall)[0]).toMatchObject({ kind: 'full', requestedSections: sections });
-      if (sections.includes('execution')) {
-        expect(delivered(recall)).toBeGreaterThan(24_000);
-        for (const surface of [recall.content, recall.structuredContent])
-          expect(JSON.stringify(surface)).toContain('returned intact');
-        expect(lines(recall)).toContain(`> ${execution}`);
-      } else expect(delivered(recall)).toBeLessThanOrEqual(24_000);
-    }
-  });
   it('delivers nested prose quotes and empty lists intact on both surfaces', async () => {
     await disposeCatalogService();
     const prose =
@@ -391,7 +325,7 @@ describe('complete detail contracts', () => {
     expect(cweGetWeakness.output.safeParse(empty).success).toBe(true);
   });
 
-  it('deduplicates normalized IDs before deferring and validates submitted ceilings and syntax', async () => {
+  it('deduplicates normalized IDs before deferring and validates item syntax', async () => {
     const ids = ['79', 'CWE-079', ...Array.from({ length: 21 }, (_, index) => String(index + 100))];
     const result = await weakness({ ids });
     expect(result.entries.map((entry) => entry.id)).toEqual(['CWE-79']);
@@ -406,8 +340,6 @@ describe('complete detail contracts', () => {
       cap: 20,
     });
     expect(JSON.stringify(wire.content)).toContain('22');
-    expect(cweGetWeakness.input.safeParse({ ids: Array(200).fill('79') }).success).toBe(true);
-    expect(cweGetWeakness.input.safeParse({ ids: Array(201).fill('79') }).success).toBe(false);
     // A malformed item is its own result; the rest of the batch still resolves.
     const malformed = await runToolContract(cweGetWeakness, {
       ids: ['0', 'CAPEC-1', '-1', '1.2', 'CWE-', '79'],
@@ -439,6 +371,28 @@ describe('complete detail contracts', () => {
     });
     expect(batch.deferredIds).toEqual(['CAPEC-21']);
   });
+
+  it.each([
+    ['CWE', cweGetWeakness],
+    ['CAPEC', cweGetAttackPattern],
+  ] as const)(
+    'processes 20 and defers 181 distinct %s positions in order',
+    async (family, tool) => {
+      const ids = Array.from({ length: 201 }, (_, index) => String(index + 10_001));
+      const wire = await runToolContract(tool, { ids });
+      expect(wire.isError).not.toBe(true);
+      const deferredIds = ids.slice(20).map((id) => `${family}-${id}`);
+      expect(wire.structuredContent).toMatchObject({
+        deferredIds,
+        totalCount: 201,
+        truncated: true,
+        shown: 20,
+        cap: 20,
+      });
+      expect(copiedList(wire, 'deferredIds')).toEqual(deferredIds);
+      expect(lines(wire).join('\n')).toContain(`Repeat ${tool.name} with deferredIds`);
+    },
+  );
 
   it('resolves a mixed batch per item, with recovery for each miss on both surfaces', async () => {
     const wire = await runToolContract(cweGetWeakness, {
@@ -649,138 +603,51 @@ describe('complete detail contracts', () => {
     expect(JSON.stringify(invalid.content)).toContain('cwe_list_reference');
   });
 
-  it('outlines oversized delivered defaults but preserves explicit selections', async () => {
-    const description = 'Sparse description.';
-    const at = description + 'x'.repeat(24000);
+  it('returns every large CAPEC default and keeps explicit outlines available', async () => {
     await disposeCatalogService();
-    await load(cwe.replace(description, at));
-    expect((await weakness({ ids: ['20'] })).entries[0]?.kind).toBe('outline');
-    const explicit = await weakness({ ids: ['20'], sections: ['summary'] });
-    expect(explicit.entries[0]).toMatchObject({ kind: 'full', description: at });
-    expect(JSON.stringify(cweGetWeakness.format!(explicit))).toContain(at);
-  });
-
-  it('omits an oversized CAPEC default section, keeps the rest and honors explicit complete and empty sections', async () => {
-    await disposeCatalogService();
-    const long = 'é'.repeat(13000);
-    await load(cwe, capec.replace('Attack description.', long));
+    const description = 'é'.repeat(13000);
+    const prerequisite = 'p'.repeat(6000);
+    const execution = 'e'.repeat(13000);
+    const mitigation = 'm'.repeat(6000);
+    await load(
+      cwe,
+      capec
+        .replace('Attack description.', description)
+        .replace('First prerequisite.', prerequisite)
+        .replace('Use input.', execution)
+        .replace('Validate.', mitigation),
+    );
     const wire = await runToolContract(cweGetAttackPattern, { ids: ['1'] });
-    expect(delivered(wire)).toBeLessThanOrEqual(24_000);
-    const entry = entriesOf(wire)[0]!;
-    const notice =
-      'Omitted to fit the 24,000-byte response budget: summary. Repeat cwe_get_attack_pattern with this ID and sections ["summary"].';
-    expect(entry).toMatchObject({
-      kind: 'partial',
+    expect(wire.isError).not.toBe(true);
+    expect(entriesOf(wire)[0]).toMatchObject({
+      kind: 'full',
+      description,
       requestedSections: ['summary', 'prerequisites', 'execution', 'mitigations', 'mappings'],
-      prerequisites: ['First prerequisite.', 'Second prerequisite.'],
+      prerequisites: [prerequisite, 'Second prerequisite.'],
       attackTechniqueIds: ['T1059.001'],
-      outline: [{ section: 'summary', sizeInBytes: expect.any(Number) }],
-      notice,
     });
-    expect(entry).not.toHaveProperty('description');
-    expect(entry).toHaveProperty('executionFlow');
-    expect(lines(wire)).toContain(`> ${notice}`);
-    expect(lines(wire).join('\n')).toContain(outlineText(entry));
-    // The notice's re-call returns exactly the omitted section, complete.
-    const explicit = await runToolContract(cweGetAttackPattern, {
-      ids: ['1'],
-      sections: recalled(notice),
-    });
-    expect(entriesOf(explicit)[0]).toMatchObject({ kind: 'full', description: long });
-    expect(lines(explicit)).toContain(`> ${long}`);
+    expect(entriesOf(wire)[0]).not.toHaveProperty('outline');
+    for (const line of [description, prerequisite, execution, mitigation])
+      expect(lines(wire)).toContain(`> ${line}`);
     expect((await pattern({ ids: ['1'], sections: [] })).entries[0]?.kind).toBe('outline');
   });
 
-  it('keeps default sections in declared order, omitting one that overflows even when it is smaller', async () => {
-    // Consequences come first and are larger; mitigations alone would fit but not after them.
-    const note = 'c'.repeat(7800);
-    const mitigation = 'm'.repeat(4500);
-    await disposeCatalogService();
-    await load(cwe.replace('Conditional.', note).replace('Validate all fields.', mitigation));
-    const wire = await runToolContract(cweGetWeakness, { ids: ['79'] });
-    expect(wire.isError).not.toBe(true);
-    expect(delivered(wire)).toBeLessThanOrEqual(24_000);
-    const entry = entriesOf(wire)[0]!;
-    const notice =
-      'Omitted to fit the 24,000-byte response budget: mitigations. Repeat cwe_get_weakness with this ID and sections ["mitigations"].';
-    expect(entry).toMatchObject({
-      kind: 'partial',
-      requestedSections: ['summary', 'consequences', 'mitigations', 'relations'],
-      consequences: [{ note }],
-      relatedWeaknesses: [{ id: 'CWE-20' }],
-      outline: [{ section: 'mitigations', sizeInBytes: expect.any(Number) }],
-      notice,
-    });
-    expect(entry).not.toHaveProperty('mitigations');
-    expect(entry).toHaveProperty('description');
-    for (const line of [`> ${notice}`, `> ${note}`, '> partial'])
-      expect(lines(wire)).toContain(line);
-    expect(lines(wire).join('\n')).toContain(outlineText(entry));
-    expect(lines(wire)).not.toContain(`> ${mitigation}`);
-    // The omitted section's size is what adding it costs a response, on both surfaces.
-    const marginal =
-      delivered(
-        await runToolContract(cweGetWeakness, {
-          ids: ['79'],
-          sections: ['summary', 'mitigations'],
-        }),
-      ) - delivered(await runToolContract(cweGetWeakness, { ids: ['79'], sections: ['summary'] }));
-    const size = (entry.outline as { sizeInBytes: number }[])[0]!.sizeInBytes;
-    expect(Math.abs(size - marginal) / marginal).toBeLessThan(0.02);
-    const recall = await runToolContract(cweGetWeakness, {
-      ids: ['79'],
-      sections: recalled(notice),
-    });
-    expect(entriesOf(recall)[0]).toMatchObject({
-      kind: 'full',
-      requestedSections: ['mitigations'],
-      mitigations: [{ description: mitigation }],
-    });
-  });
-
-  it('joins the absent-section and omitted-section notices for a category', async () => {
+  it('returns a large category summary beside members and preserves the absent-section notice', async () => {
     const summary = 'é'.repeat(13000);
     await disposeCatalogService();
     await load(cwe.replace('Organizational summary.', summary));
     const wire = await runToolContract(cweGetWeakness, { ids: ['900'] });
-    expect(delivered(wire)).toBeLessThanOrEqual(24_000);
     const notice =
-      'The source entry has no content for these selected sections: consequences, mitigations. Omitted to fit the 24,000-byte response budget: summary. Repeat cwe_get_weakness with this ID and sections ["summary"].';
+      'The source entry has no content for these selected sections: consequences, mitigations.';
     expect(entriesOf(wire)[0]).toMatchObject({
-      kind: 'partial',
+      kind: 'full',
       type: 'category',
+      description: summary,
       members: [{ id: 'CWE-79' }, { id: 'CWE-20' }],
-      outline: [{ section: 'summary', sizeInBytes: expect.any(Number) }],
       notice,
     });
-    expect(entriesOf(wire)[0]).not.toHaveProperty('description');
-    // The notice copied out of content[] reads back as the value, and embeds verbatim.
     expect(copied(wire, 'notice').map((line) => parseMarkdown(line).text)).toEqual([notice]);
-    expect(lines(wire)).toContain(`> ${notice}`);
-  });
-
-  it('outlines a default record when each of its sections overflows alone', async () => {
-    const huge = 'q'.repeat(24000);
-    await disposeCatalogService();
-    await load(
-      cwe.replace(
-        '<Description>Sparse description.</Description>',
-        `<Description>${huge}</Description><Common_Consequences><Consequence><Scope>Integrity</Scope><Impact>Modify Data</Impact><Note>${huge}</Note></Consequence></Common_Consequences><Potential_Mitigations><Mitigation><Description>${huge}</Description></Mitigation></Potential_Mitigations>`,
-      ),
-    );
-    const wire = await runToolContract(cweGetWeakness, { ids: ['20'] });
-    expect(delivered(wire)).toBeLessThanOrEqual(24_000);
-    const entry = entriesOf(wire)[0]!;
-    expect(entry).toMatchObject({
-      kind: 'outline',
-      outline: [
-        { section: 'summary', sizeInBytes: expect.any(Number) },
-        { section: 'consequences', sizeInBytes: expect.any(Number) },
-        { section: 'mitigations', sizeInBytes: expect.any(Number) },
-      ],
-    });
-    for (const field of ['description', 'consequences', 'mitigations'])
-      expect(entry).not.toHaveProperty(field);
+    expect(lines(wire)).toContain(`> ${summary}`);
   });
 
   it('adds an example page to the default sections when an example parameter is in effect, on both surfaces', async () => {
@@ -852,85 +719,6 @@ describe('complete detail contracts', () => {
         expect(await runToolContract(cweGetWeakness, { ...args, ...defaults })).toEqual(plain);
     }
   });
-
-  it('omits an example page that does not fit beside the defaults and sizes it as the page its re-call returns', async () => {
-    // Defaults fit; the page selected by exampleOffset 1, the second example, does not fit beside them.
-    const note = 'c'.repeat(7800);
-    const second = 'e'.repeat(4500);
-    await disposeCatalogService();
-    await load(cwe.replace('Conditional.', note).replace('Second example.', second));
-    const wire = await runToolContract(cweGetWeakness, { ids: ['79'], exampleOffset: 1 });
-    expect(wire.isError).not.toBe(true);
-    expect(delivered(wire)).toBeLessThanOrEqual(24_000);
-    const entry = entriesOf(wire)[0]!;
-    const notice =
-      'Omitted to fit the 24,000-byte response budget: examples. Repeat cwe_get_weakness with this ID and sections ["examples"], exampleOffset 1.';
-    expect(entry).toMatchObject({
-      kind: 'partial',
-      requestedSections: ['summary', 'consequences', 'mitigations', 'relations', 'examples'],
-      consequences: [{ note }],
-      mitigations: [{ description: 'Validate all fields.' }],
-      outline: [{ section: 'examples', sizeInBytes: expect.any(Number) }],
-      notice,
-    });
-    expect(entry).not.toHaveProperty('examples');
-    expect(entry).not.toHaveProperty('examplePage');
-    expect(lines(wire)).toContain(`> ${notice}`);
-    expect(lines(wire).join('\n')).toContain(outlineText(entry));
-    expect(lines(wire)).not.toContain(`> ${second}`);
-    // The notice's re-call, executed verbatim, returns the advertised page within the budget.
-    const args = recallArgs(notice);
-    expect(args).toEqual({ sections: ['examples'], exampleOffset: 1 });
-    const recall = await runToolContract(cweGetWeakness, { ids: ['79'], ...args });
-    expect(recall.isError).not.toBe(true);
-    expect(delivered(recall)).toBeLessThanOrEqual(24_000);
-    const page = entriesOf(recall)[0]!;
-    expect(page).toMatchObject({
-      kind: 'full',
-      examples: [{ index: 1, blocks: [{ kind: 'prose', text: second }] }],
-      examplePage: { total: 2, shown: 1, offset: 1, hasMore: false },
-    });
-    expect(lines(recall)).toContain(`> ${second}`);
-    const size = (entry.outline as { sizeInBytes: number }[])[0]!.sizeInBytes;
-    expect(size).toBe(sectionBytes({ examples: page.examples, examplePage: page.examplePage }));
-  });
-
-  it('names example parameters in the re-call of a default record that outlines whole', async () => {
-    const huge = 'q'.repeat(24000);
-    await disposeCatalogService();
-    await load(
-      cwe.replace(
-        '<Description>Sparse description.</Description>',
-        `<Description>${huge}</Description><Common_Consequences><Consequence><Scope>Integrity</Scope><Impact>Modify Data</Impact><Note>${huge}</Note></Consequence></Common_Consequences><Potential_Mitigations><Mitigation><Description>${huge}</Description></Mitigation></Potential_Mitigations><Demonstrative_Examples><Demonstrative_Example><Body_Text>Prose only.</Body_Text></Demonstrative_Example><Demonstrative_Example><Example_Code Language="Java">${huge}</Example_Code></Demonstrative_Example></Demonstrative_Examples>`,
-      ),
-    );
-    const wire = await runToolContract(cweGetWeakness, { ids: ['20'], exampleLanguage: 'java' });
-    expect(delivered(wire)).toBeLessThanOrEqual(24_000);
-    const entry = entriesOf(wire)[0]!;
-    const notice =
-      'Repeat cwe_get_weakness with this ID and explicit sections, one section at a time for large records; add exampleLanguage "Java" when selecting examples.';
-    expect(entry).toMatchObject({ kind: 'outline', notice });
-    expect(lines(wire)).toContain(`> ${notice}`);
-    const outline = entry.outline as { section: string; sizeInBytes: number }[];
-    expect(outline.map(({ section }) => section)).toEqual([
-      'summary',
-      'consequences',
-      'mitigations',
-      'examples',
-    ]);
-    const page = entriesOf(
-      await runToolContract(cweGetWeakness, {
-        ids: ['20'],
-        sections: ['examples'],
-        exampleLanguage: 'Java',
-      }),
-    )[0]!;
-    expect(page.examples).toMatchObject([{ index: 1 }]);
-    expect(outline[3]!.sizeInBytes).toBe(
-      sectionBytes({ examples: page.examples, examplePage: page.examplePage }),
-    );
-  });
-
   it('returns explicit sections without examples unchanged and gives the re-call that applies example parameters', async () => {
     const summary = await runToolContract(cweGetWeakness, {
       ids: ['79', '20'],
@@ -1083,7 +871,7 @@ describe('complete detail contracts', () => {
     );
   });
 
-  it('outlines a default that its alternate terms push past the budget, never cutting a term', async () => {
+  it('sizes large alternate terms in an explicit outline and returns them intact when selected', async () => {
     expect((await weakness({ ids: ['20'] })).entries[0]?.kind).toBe('full');
     const long = 'y'.repeat(24000);
     const terms = [{ term: 'Short' }, { term: 'Long', description: long }];
@@ -1094,7 +882,7 @@ describe('complete detail contracts', () => {
         `<Description>Sparse description.</Description><Alternate_Terms><Alternate_Term><Term>Short</Term></Alternate_Term><Alternate_Term><Term>Long</Term><Description>${long}</Description></Alternate_Term></Alternate_Terms>`,
       ),
     );
-    const outline = await weakness({ ids: ['20'] });
+    const outline = await weakness({ ids: ['20'], sections: [] });
     // The size counts both surfaces, so it exceeds twice the 24,000-character term.
     const sizeInBytes = sectionBytes({ description: 'Sparse description.', alternateTerms: terms });
     expect(sizeInBytes).toBeGreaterThan(48_000);
@@ -1206,6 +994,8 @@ describe('complete detail contracts', () => {
     ];
     const capecNotice =
       'The source entry has no content for these selected sections: prerequisites, execution, skills, consequences, mitigations, examples, relations, mappings.';
+    await disposeCatalogService();
+    await load(cwe, capec.replace('Nature="ChildOf" CAPEC_ID="2"', 'Nature="PeerOf" CAPEC_ID="2"'));
     const capecWire = await runToolContract(cweGetAttackPattern, {
       ids: ['2'],
       sections: capecSections,
@@ -1438,7 +1228,7 @@ describe('complete detail contracts', () => {
         },
         {
           id: 'CAPEC-2',
-          availableSections: ['summary'],
+          availableSections: ['summary', 'relations'],
           notice: 'The source entry has no content for these selected sections: notes.',
         },
       ],
@@ -1451,6 +1241,148 @@ describe('complete detail contracts', () => {
     expect(
       cweGetWeakness.output.safeParse(await weakness({ ids: ['79'], sections: ['notes'] })).success,
     ).toBe(true);
+  });
+
+  it('resolves retained CAPEC mappings against each same-version CWE replacement', async () => {
+    await disposeCatalogService();
+    let now = clock.now();
+    let cweXml = originalCwe;
+    const catalog = await initCatalogService({
+      clock: { ...clock, now: () => now },
+      context: createMockContext(),
+      request: async (url) => {
+        if (url === SOURCE_URLS.cwe) return new Response(zipSync({ 'cwe.xml': strToU8(cweXml) }));
+        if (url === SOURCE_URLS.cweVersion)
+          return Response.json({ ContentVersion: '4.test', ContentDate: '2026-04-30' });
+        if (url === SOURCE_URLS.capec) return new Response(originalCapec);
+        throw new Error(`Unexpected URL ${url}`);
+      },
+    });
+    const assertMapping = async (name?: string) => {
+      const search = await runToolContract(cweSearchAttackPatterns, { cweId: '79' });
+      const detail = await runToolContract(cweGetAttackPattern, {
+        ids: ['1'],
+        sections: ['mappings'],
+      });
+      const relatedWeaknesses = [{ id: 'CWE-79', ...(name === undefined ? {} : { name }) }];
+      const { results } = search.structuredContent as { results: Record<string, unknown>[] };
+      expect(results[0]?.relatedWeaknesses).toEqual(relatedWeaknesses);
+      expect(entriesOf(detail)[0]?.relatedWeaknesses).toEqual(relatedWeaknesses);
+      for (const wire of [search, detail]) {
+        expect(wire.isError).not.toBe(true);
+        const rendered = lines(wire).filter(Boolean);
+        const mapping = rendered.slice(rendered.indexOf('**relatedWeaknesses**') + 1);
+        expect(mapping.slice(0, 3)).toEqual(['**1**', '**id**', '> CWE-79']);
+        if (name === undefined) {
+          expect(mapping[3]).not.toBe('**name**');
+        } else {
+          expect(mapping[3]).toBe('**name**');
+          expect(parseMarkdown(mapping[4] ?? '').text).toBe(name);
+        }
+      }
+    };
+    const originalSnapshot = catalog.snapshot();
+    await assertMapping('Synthetic & weakness');
+    cweXml = originalCwe.replace('Name="Synthetic &amp; weakness"', 'Name="Renamed weakness"');
+    now += 24 * 60 * 60 * 1000;
+    await catalog.refresh();
+    await assertMapping('Renamed weakness');
+    cweXml = originalCwe.replace(/<Weakness ID="0079".*?<\/Weakness>/s, '');
+    now += 24 * 60 * 60 * 1000;
+    await catalog.refresh();
+    expect(catalog.snapshot().cwe.weaknesses.has('CWE-79')).toBe(false);
+    await assertMapping();
+    expect(originalSnapshot.capec.attackPatterns.get('CAPEC-1')?.relatedWeaknesses).toEqual([
+      { id: 'CWE-79', name: 'Synthetic & weakness' },
+    ]);
+  });
+
+  it('returns direct child patterns in numeric order on both surfaces, including inactive children', async () => {
+    await disposeCatalogService();
+    await load(
+      cwe,
+      capec.replace(
+        '</Attack_Patterns>',
+        `<Attack_Pattern ID="10" Name="Deprecated child" Status="Deprecated" Abstraction="Standard">
+          <Description>Direct child.</Description>
+          <Related_Attack_Patterns>
+            <Related_Attack_Pattern Nature="ChildOf" CAPEC_ID="2"/>
+            <Related_Attack_Pattern Nature="ChildOf" CAPEC_ID="2"/>
+            <Related_Attack_Pattern Nature="ChildOf" CAPEC_ID="118"/>
+            <Related_Attack_Pattern Nature="ChildOf" CAPEC_ID="999999"/>
+          </Related_Attack_Patterns>
+        </Attack_Pattern>
+        <Attack_Pattern ID="6" Name="Obsolete child" Status="Obsolete" Abstraction="Detailed">
+          <Description>Direct child.</Description>
+          <Related_Attack_Patterns><Related_Attack_Pattern Nature="ChildOf" CAPEC_ID="2"/></Related_Attack_Patterns>
+        </Attack_Pattern>
+        <Attack_Pattern ID="11" Name="Draft grandchild" Status="Draft" Abstraction="Detailed">
+          <Description>Indirect child of CAPEC-2.</Description>
+          <Related_Attack_Patterns>
+            <Related_Attack_Pattern Nature="ChildOf" CAPEC_ID="10"/>
+            <Related_Attack_Pattern Nature="PeerOf" CAPEC_ID="2"/>
+          </Related_Attack_Patterns>
+        </Attack_Pattern></Attack_Patterns>`,
+      ),
+    );
+    const parent = await runToolContract(cweGetAttackPattern, {
+      ids: ['2'],
+      sections: ['relations'],
+    });
+    const children = [
+      { id: 'CAPEC-1', name: 'Synthetic attack', abstraction: 'Detailed', status: 'Stable' },
+      { id: 'CAPEC-6', name: 'Obsolete child', abstraction: 'Detailed', status: 'Obsolete' },
+      { id: 'CAPEC-10', name: 'Deprecated child', abstraction: 'Standard', status: 'Deprecated' },
+    ];
+    expect(entriesOf(parent)[0]).toMatchObject({
+      availableSections: ['summary', 'relations'],
+      childAttackPatterns: children,
+    });
+    expect(entriesOf(parent)[0]).not.toHaveProperty('relatedAttackPatterns');
+    expect(copied(parent, 'id')).toEqual(['CAPEC-2', 'CAPEC-1', 'CAPEC-6', 'CAPEC-10']);
+    expect(copied(parent, 'name')).toEqual([
+      'Sparse pattern',
+      'Synthetic attack',
+      'Obsolete child',
+      'Deprecated child',
+    ]);
+    expect(copied(parent, 'abstraction')).toEqual(['Meta', 'Detailed', 'Detailed', 'Standard']);
+    expect(copied(parent, 'status')).toEqual(['Deprecated', 'Stable', 'Obsolete', 'Deprecated']);
+
+    const defaultParent = (await pattern({ ids: ['2'] })).entries[0];
+    expect(defaultParent?.requestedSections).toEqual([
+      'summary',
+      'prerequisites',
+      'execution',
+      'mitigations',
+      'mappings',
+    ]);
+    expect(defaultParent).not.toHaveProperty('childAttackPatterns');
+    const outlined = (await pattern({ ids: ['2'], sections: [] })).entries[0];
+    expect(outlined?.outline).toContainEqual({
+      section: 'relations',
+      sizeInBytes: sectionBytes({ childAttackPatterns: children }),
+    });
+    expect(outlined).not.toHaveProperty('childAttackPatterns');
+
+    const [child, leaf, category] = (
+      await pattern({ ids: ['10', '11', '118'], sections: ['relations'] })
+    ).entries;
+    expect(child?.relatedAttackPatterns).toEqual([
+      { nature: 'ChildOf', id: 'CAPEC-2', name: 'Sparse pattern' },
+      { nature: 'ChildOf', id: 'CAPEC-2', name: 'Sparse pattern' },
+      { nature: 'ChildOf', id: 'CAPEC-118' },
+      { nature: 'ChildOf', id: 'CAPEC-999999' },
+    ]);
+    expect(child?.childAttackPatterns).toEqual([
+      { id: 'CAPEC-11', name: 'Draft grandchild', abstraction: 'Detailed', status: 'Draft' },
+    ]);
+    expect(leaf).not.toHaveProperty('childAttackPatterns');
+    expect(category).not.toHaveProperty('childAttackPatterns');
+    expect(category?.members?.map(({ id }) => id)).toEqual(['CAPEC-2', 'CAPEC-1']);
+    const indexed = getCatalogService().snapshot().capec.attackPatterns.get('CAPEC-2');
+    expect(Object.isFrozen(indexed?.childAttackPatterns)).toBe(true);
+    expect(Object.isFrozen(indexed?.childAttackPatterns?.[0])).toBe(true);
   });
 
   it('returns CAPEC categories and views as typed entries with members, filters and their own defaults', async () => {
@@ -1593,7 +1525,7 @@ describe('complete detail contracts', () => {
       expect(cweGetAttackPattern.output.safeParse(result).success).toBe(true);
   });
 
-  it('counts background details toward a default outline but never notes', async () => {
+  it('sizes background details and notes in explicit outlines', async () => {
     const long = 'z'.repeat(24000);
     const withSparse = (xml: string) =>
       cwe.replace(
@@ -1606,7 +1538,7 @@ describe('complete detail contracts', () => {
         `<Background_Details><Background_Detail>${long}</Background_Detail></Background_Details>`,
       ),
     );
-    const outline = await weakness({ ids: ['20'] });
+    const outline = await weakness({ ids: ['20'], sections: [] });
     expect(outline.entries[0]).toMatchObject({
       kind: 'outline',
       outline: [
@@ -1673,7 +1605,11 @@ describe('reference and shared contracts', () => {
       const mechanics = result.items.find((item) => item.key === 'mechanics')?.description;
       expect(mechanics).toContain('CAPEC-1000');
       expect(mechanics).toContain('CAPEC-3000');
+      expect(mechanics).toContain(
+        'Request relations on a member pattern to find its direct childAttackPatterns.',
+      );
       expect(rendered).toContain('CAPEC-3000');
+      expect(rendered).toContain('childAttackPatterns');
     }
   });
 
@@ -1892,6 +1828,24 @@ describe('reference and shared contracts', () => {
       pageItems(rows, { limit: 101, cursor: capped.pagination.nextCursor! }, ['test'], provenance)
         .items,
     ).toEqual([100]);
+    const atEnd = pageItems(
+      rows.slice(0, 100),
+      { limit: 101, cursor: capped.pagination.nextCursor! },
+      ['test'],
+      provenance,
+    );
+    expect(atEnd.items).toEqual([]);
+    expect(atEnd.pagination).toEqual({ total: 100, shown: 0, hasMore: false });
+    expect(() =>
+      pageItems(
+        rows.slice(0, 99),
+        { limit: 101, cursor: capped.pagination.nextCursor! },
+        ['test'],
+        provenance,
+      ),
+    ).toThrow(
+      expect.objectContaining({ data: expect.objectContaining({ reason: 'invalid_cursor' }) }),
+    );
     expect(cweListReference.input.safeParse({ topic: 'views', limit: 1000 }).success).toBe(true);
     expect(cweListReference.input.safeParse({ topic: 'views', limit: 1001 }).success).toBe(false);
   });
@@ -1981,9 +1935,7 @@ describe('reference and shared contracts', () => {
         pagination: { shown: number; total: number; nextCursor?: string };
         shown?: number;
       };
-      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(24000);
-      expect(page.items.length).toBeGreaterThan(0);
-      expect(page.items.length).toBeLessThanOrEqual(100);
+      expect(page.items.length).toBe(seen.length === 0 ? 100 : 3);
       expect(page.pagination.shown).toBe(page.items.length);
       expect(page.pagination.total).toBe(103);
       seen.push(...page.items.map((item) => item.id));

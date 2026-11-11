@@ -1308,6 +1308,7 @@ function normalizeWeakness(
 ): Weakness {
   const entryId = id(node, 'CWE');
   const mappingNotes = child(node, 'Mapping_Notes');
+  const suggestions = mappingNotes ? nested(mappingNotes, 'Suggestions', 'Suggestion') : [];
   const platforms = child(node, 'Applicable_Platforms');
   const technicalNuance = child(node, 'Technical_Nuance');
   return {
@@ -1339,6 +1340,14 @@ function normalizeWeakness(
             ...arrayField(mappingNotes, 'Reasons', 'Reason', 'reasons', (entry) =>
               requiredAttribute(entry, 'Type'),
             ),
+            ...(suggestions.length
+              ? {
+                  suggestions: suggestions.map((entry) => ({
+                    id: id(entry, 'CWE', 'CWE_ID'),
+                    ...optionalAttributes(entry, { comment: 'Comment' }),
+                  })),
+                }
+              : {}),
           },
         }
       : {}),

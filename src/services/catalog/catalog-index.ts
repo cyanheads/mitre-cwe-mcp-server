@@ -13,6 +13,7 @@ import type {
   CatalogSnapshot,
   CweCatalog,
   Member,
+  SearchAliases,
   SearchText,
   TaxonomyMapping,
   Weakness,
@@ -59,13 +60,14 @@ function append(map: Map<string, string[]>, key: string, value: string): void {
     if (!values.includes(value)) values.push(value);
   } else map.set(key, [value]);
 }
-/** Attach the loaded record name to a recorded relation whose target exists. */
-function withName<T extends { id: string }>(
+/** Resolve the name against the current catalog, which can replace a previously loaded target. */
+function withName<T extends { id: string; name?: string }>(
   related: T,
   records: ReadonlyMap<string, { name: string }>,
 ) {
   const record = records.get(related.id);
-  return { ...related, ...(record ? { name: record.name } : {}) };
+  const { name: _previousName, ...relation } = related;
+  return { ...relation, ...(record ? { name: record.name } : {}) };
 }
 const PLATFORM_VOCABULARY = {
   language: 'languages',
@@ -116,8 +118,19 @@ export function buildCatalogSnapshot(
     append(view, parent, child);
   };
   for (const [id, source] of cwe.weaknesses) {
+    const mappingNotes = source.mappingNotes;
     const entry: Weakness = {
       ...source,
+      ...(mappingNotes?.suggestions
+        ? {
+            mappingNotes: {
+              ...mappingNotes,
+              suggestions: mappingNotes.suggestions.map((suggestion) =>
+                withName(suggestion, cwe.weaknesses),
+              ),
+            },
+          }
+        : {}),
       ...(source.members ? { members: source.members.map(hydrate) } : {}),
       ...(source.relatedWeaknesses
         ? {
@@ -166,9 +179,26 @@ export function buildCatalogSnapshot(
     CATEGORY_ONLY_STATUSES,
     [...categoryStatuses].filter((status) => !weaknessStatuses.includes(status)),
   );
+  const capecChildren = new Map<string, Set<AttackPattern>>();
+  for (const source of capec.attackPatterns.values()) {
+    for (const { id, nature } of source.relatedAttackPatterns ?? []) {
+      if (nature !== 'ChildOf' || !capec.attackPatterns.has(id)) continue;
+      const children = capecChildren.get(id);
+      if (children) children.add(source);
+      else capecChildren.set(id, new Set([source]));
+    }
+  }
   for (const [id, source] of capec.attackPatterns) {
+    const children = capecChildren.get(id);
     const entry: AttackPattern = {
       ...source,
+      ...(children
+        ? {
+            childAttackPatterns: [...children]
+              .sort(compareIds)
+              .map(({ id, name, abstraction, status }) => ({ id, name, abstraction, status })),
+          }
+        : {}),
       ...(source.relatedWeaknesses
         ? {
             relatedWeaknesses: source.relatedWeaknesses.map((related) => {
@@ -256,6 +286,10 @@ export function buildCatalogSnapshot(
       loadedAt,
     },
     health: { cwe: freeze({ ...health.cwe }), capec: freeze({ ...health.capec }) },
+    searchAliases: {
+      cwe: indexSearchAliases(weaknesses, cwe.searchText),
+      capec: indexSearchAliases(attackPatterns, capec.searchText),
+    },
     attackPatternsByWeakness: readonlyLists(attackPatternsByWeakness),
     childrenByView: readonlyMap(
       new Map([...childrenByView].map(([view, entries]) => [view, readonlyLists(entries)])),
@@ -428,6 +462,8 @@ const DIGIT = /\p{N}/uy;
 const WORD_LED = /^[\p{L}\p{N}]/u;
 const DIGIT_ENDED = /\p{N}$/u;
 const PREFIX_ELIGIBLE = /^\p{L}{4,}$/u;
+const COMPOUND_RUN = /[\p{L}\p{M}\p{N}-]+/gu;
+const LETTER_WORD = /^\p{L}[\p{L}\p{M}]*$/u;
 function holdsAt(pattern: RegExp, text: string, index: number): boolean {
   pattern.lastIndex = index;
   return pattern.test(text);
@@ -477,6 +513,66 @@ export function tokenMatcher(text: string): (token: string) => boolean {
     return false;
   };
 }
+
+/** Take maximal single-hyphen chains; digit-led or digit-ended components invalidate the chain. */
+function closedCompounds(text: string): Set<string> {
+  const aliases = new Set<string>();
+  if (!text.includes('-')) return aliases;
+  for (const [run] of text.matchAll(COMPOUND_RUN)) {
+    for (const segment of run.split(/-{2,}/)) {
+      const compound = segment.replace(/^-|-$/g, '');
+      if (!compound.includes('-')) continue;
+      const words = compound.split('-');
+      if (words.every((word) => LETTER_WORD.test(word)))
+        aliases.add(words.join('').toLowerCase().replaceAll('i\u0307', 'i'));
+    }
+  }
+  return aliases;
+}
+
+function aliasMatcher(aliases: ReadonlySet<string>): (token: string) => boolean {
+  return (token) => aliases.has(token.replaceAll('i\u0307', 'i'));
+}
+
+/** Match a reference label by the literal rule or an exact closed compound spelling. */
+export function labelTokenMatcher(label: string): (token: string) => boolean {
+  const literal = tokenMatcher(label);
+  const alias = aliasMatcher(closedCompounds(label));
+  return (token) => literal(token) || alias(token);
+}
+
+/** Precompute aliases without storing mutable sets on the published snapshot. */
+function indexSearchAliases(
+  records: ReadonlyMap<string, { name: string }>,
+  texts: ReadonlyMap<string, SearchText>,
+): ReadonlyMap<string, SearchAliases> {
+  const index = new Map<string, SearchAliases>();
+  for (const [id, entry] of records) {
+    const text = texts.get(id);
+    if (!text) continue;
+    const titles = [entry.name, ...(text.alternateTerms ?? [])].map((title) => ({
+      text: title,
+      aliases: closedCompounds(title),
+    }));
+    const description = closedCompounds(text.description);
+    const extended = closedCompounds(text.extendedDescription ?? '');
+    const any = new Set([...description, ...extended]);
+    for (const { aliases } of titles) for (const alias of aliases) any.add(alias);
+    if (any.size)
+      index.set(
+        id,
+        freeze({
+          any: aliasMatcher(any),
+          description: aliasMatcher(description),
+          titles: titles.map(({ text, aliases }) => ({
+            text,
+            hasAlias: aliasMatcher(aliases),
+          })),
+        }),
+      );
+  }
+  return readonlyMap(index);
+}
 /** A record's plain-text search projection, which every searched record has. */
 function projection(entry: { id: string }, texts: ReadonlyMap<string, SearchText>): SearchText {
   const text = texts.get(entry.id);
@@ -495,18 +591,34 @@ function searchedText(entry: { name: string }, text: SearchText): string {
 /**
  * Match every filter token (`tokenMatcher`) against the name and the record's search projection:
  * tier 0 when the name or one alternate term holds every token, 1 when the description does, 2 when
- * they are spread across the searched fields, and undefined when a token is absent. A name token
- * plus a token from an unrelated term is a spread match, never tier 0.
+ * they are spread across the searched fields, and undefined when a token is absent. Closed
+ * compound spellings retain their source fields, and only affect rank when needed for a match.
  */
 function matchTier(
   entry: { id: string; name: string },
   texts: ReadonlyMap<string, SearchText>,
   filterTokens: readonly string[],
+  aliases: SearchAliases | undefined,
 ): number | undefined {
   if (!filterTokens.length) return 0;
   const text = projection(entry, texts);
   const matchesAll = (value: string) => filterTokens.every(tokenMatcher(value));
-  if (!matchesAll(searchedText(entry, text))) return undefined;
+  const literal = tokenMatcher(searchedText(entry, text));
+  for (const [index, token] of filterTokens.entries()) {
+    if (literal(token)) continue;
+    if (
+      !aliases?.any(token) ||
+      !filterTokens.slice(index + 1).every((rest) => literal(rest) || aliases.any(rest))
+    )
+      return undefined;
+    const matchesAllWithAliases = (value: string, alias: (token: string) => boolean) => {
+      const has = tokenMatcher(value);
+      return filterTokens.every((term) => has(term) || alias(term));
+    };
+    if (aliases.titles.some(({ text, hasAlias }) => matchesAllWithAliases(text, hasAlias)))
+      return 0;
+    return matchesAllWithAliases(text.description, aliases.description) ? 1 : 2;
+  }
   if ([entry.name, ...(text.alternateTerms ?? [])].some(matchesAll)) return 0;
   return matchesAll(text.description) ? 1 : 2;
 }
@@ -618,7 +730,12 @@ export function searchWeaknesses(snapshot: CatalogSnapshot, filters: WeaknessFil
         (impact && !entry.consequences?.some((consequence) => consequence.impacts.includes(impact)))
       )
         return [];
-      const tier = matchTier(entry, snapshot.cwe.searchText, terms);
+      const tier = matchTier(
+        entry,
+        snapshot.cwe.searchText,
+        terms,
+        snapshot.searchAliases.cwe.get(entry.id),
+      );
       return tier === undefined ? [] : [{ entry, tier }];
     }),
   );
@@ -649,7 +766,12 @@ export function searchAttackPatterns(
           ))
       )
         return [];
-      const tier = matchTier(entry, snapshot.capec.searchText, terms);
+      const tier = matchTier(
+        entry,
+        snapshot.capec.searchText,
+        terms,
+        snapshot.searchAliases.capec.get(entry.id),
+      );
       return tier === undefined ? [] : [{ entry, tier }];
     }),
   );
@@ -658,9 +780,8 @@ export function searchAttackPatterns(
 /**
  * Whether one token of a text filter matches, on its own, a weakness or a pattern the inactive
  * setting admits. When none does, no subset of the tokens matches either, so a zero-hit notice
- * suggests fewer terms only when this holds. Tokens match as the search matches them
- * (`tokenMatcher`), including its bounded prefix cases. One pass that
- * lowercases each record once and stops at the first match.
+ * suggests fewer terms only when this holds. Match literal tokens and exact compound aliases,
+ * stopping at the first match.
  */
 export function someTokenMatches(
   snapshot: CatalogSnapshot,
@@ -676,7 +797,10 @@ export function someTokenMatches(
           (entry) => includeInactive || !inactive(entry),
         );
   const texts = snapshot[catalog].searchText;
-  return records.some((entry) =>
-    terms.some(tokenMatcher(searchedText(entry, projection(entry, texts)))),
-  );
+  const indexed = snapshot.searchAliases[catalog];
+  return records.some((entry) => {
+    const literal = tokenMatcher(searchedText(entry, projection(entry, texts)));
+    const alias = indexed.get(entry.id);
+    return terms.some((token) => literal(token) || alias?.any(token));
+  });
 }

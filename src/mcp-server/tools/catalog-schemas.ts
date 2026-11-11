@@ -119,7 +119,7 @@ const outline = list(
         ),
     })
     .describe('Section not included in this entry, and its size.'),
-  'Sections available but not included in this entry, with sizes: every available section of an outline, or the selected sections a partial entry omitted.',
+  'All available sections and their sizes, returned for an explicit outline.',
 );
 const identity = {
   id: text('Canonical catalog ID.'),
@@ -128,9 +128,9 @@ const identity = {
   abstraction: text('Source abstraction level.').optional(),
   sourceUrl: text('Official definition URL.'),
   kind: z
-    .enum(['full', 'partial', 'outline'])
+    .enum(['full', 'outline'])
     .describe(
-      'full: every selected section the entry has, complete. partial: the sections of a default selection that fit the 24,000-byte response budget, complete, with the omitted ones in outline. outline: identity and section sizes only.',
+      'full: every selected section the entry has, complete. outline: identity and section sizes only.',
     ),
   requestedSections: strings('Sections selected for this response.'),
   availableSections: strings('Sections actually present in the catalog entry.'),
@@ -179,6 +179,16 @@ export const weaknessEntrySchema = z
         rationale: text('Mapping rationale in CommonMark.').optional(),
         comments: text('Mapping comments in CommonMark.').optional(),
         reasons: strings('Mapping reasons.').optional(),
+        suggestions: list(
+          z
+            .object({
+              id: text('Suggested CWE ID.'),
+              comment: text('Source suggestion comment.').optional(),
+              name: text('Resolved target name when loaded.').optional(),
+            })
+            .describe('Recorded alternative for vulnerability mapping.'),
+          'Recorded mapping suggestions in source order.',
+        ).optional(),
       })
       .describe('Vulnerability mapping notes.')
       .optional(),
@@ -361,6 +371,17 @@ export const attackPatternEntrySchema = z
         .describe('Pattern relationship.'),
       'Recorded pattern relationships.',
     ).optional(),
+    childAttackPatterns: list(
+      z
+        .object({
+          id: text('Child CAPEC ID.'),
+          name: text('Child pattern name.'),
+          abstraction: text('Source child abstraction.'),
+          status: text('Source child status.'),
+        })
+        .describe('Direct child attack pattern.'),
+      'Direct children inferred from recorded ChildOf relations, ordered by numeric CAPEC ID and including every source status.',
+    ).optional(),
     members: list(capecMember, 'Direct members of a category or view in source order.').optional(),
     filterDefinition: text(
       'Source XPath filter defining a filter-defined view’s membership, exactly as published.',
@@ -399,7 +420,7 @@ export function batchOutput<T extends z.ZodType>(entry: T) {
       'Distinct items to submit in a later call: canonical IDs, or the collapsed text of an item that is no ID.',
     ),
     guidance: text(
-      'Call-level guidance: deferred-ID continuation, budget disclosure, and the re-call for parameters the selected sections leave unused.',
+      'Call-level guidance: deferred-ID continuation and the re-call for parameters the selected sections leave unused.',
     ).optional(),
     provenance: provenanceSchema,
   });

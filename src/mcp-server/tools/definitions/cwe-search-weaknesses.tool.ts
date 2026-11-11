@@ -44,7 +44,7 @@ import {
 
 const filtersShape = {
   filter: filterSchema(
-    'All whitespace-separated tokens must match the name, a recorded alternate term, the description, or the extended description, each at a word start or camelCase hump (dos finds ReDoS). Tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (trusted finds untrusted); spelling coincidences can match. Other compounds such as deserialization must be searched as written. Blank means unset.',
+    'All whitespace-separated tokens must match the name, a recorded alternate term, the description, or the extended description, each at a word start or camelCase hump (dos finds ReDoS). Tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (trusted finds untrusted); spelling coincidences can match. An exact closed spelling also matches Unicode letter words joined by single ASCII hyphens (hardcoded finds hard-coded). Blank means unset.',
   ),
   language: text(
     'Exact platform language name or class; discover with cwe_list_reference topic platforms.',
@@ -175,11 +175,41 @@ function searchNotice(
   )}.`;
 }
 
+/** Count additional IDs from replacing one exact platform filter at a time. */
+function independentPlatformNotices(
+  snapshot: CatalogSnapshot,
+  filters: WeaknessFilters,
+  matches: readonly { id: string }[],
+): string[] {
+  const notices: string[] = [];
+  let matchedIds: Set<string> | undefined;
+  for (const [field, vocabulary, independent] of [
+    ['language', 'languages', 'Not Language-Specific'],
+    ['technology', 'technologies', 'Not Technology-Specific'],
+  ] as const) {
+    if (!filters[field] || filters[field].toLowerCase() === independent.toLowerCase()) continue;
+    const value = snapshot.vocabulary
+      .get(vocabulary)
+      ?.find((item) => item.toLowerCase() === independent.toLowerCase());
+    if (value === undefined) continue;
+    matchedIds ??= new Set(matches.map(({ id }) => id));
+    const seen = matchedIds;
+    const additional = searchWeaknesses(snapshot, { ...filters, [field]: value }).filter(
+      ({ id }) => !seen.has(id),
+    ).length;
+    if (additional)
+      notices.push(
+        `Replacing ${field} with ${escapeMarkdown(value)} finds ${additional} additional weakness${additional === 1 ? '' : 'es'}. Repeat cwe_search_weaknesses with that replacement, keep all other filters, start without cursor, and deduplicate by CWE ID.`,
+      );
+  }
+  return notices;
+}
+
 /** Search CWE weaknesses using source vocabulary and complete local membership. */
 export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
   title: 'Search CWE weaknesses',
   description:
-    'Search CWE weaknesses by all text tokens, exact platform or consequence vocabulary, abstraction, status, mapping usage, view membership, a recorded taxonomy mapping (taxonomy name or entry ID such as CERT C ARR30-C), or a CVE that MITRE cites as an observed example. Text tokens match at word starts or camelCase humps; tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (trusted finds untrusted), with possible spelling coincidences. Search other compounds such as deserialization as written; text never matches an entry ID or CVE. Omit filters to browse; categories and groupings are excluded. Each result carries MITRE’s mapping usage, which says whether the entry may be used to map a vulnerability, and, under a taxonomy or CVE filter, every mapping or observed example that matched. Results order by all tokens in the name or in one recorded alternate term such as XSS, then all in the description, then any other match, then numeric ID. Description previews contain the first sentence; use cwe_get_weakness for complete sections. Follow nextCursor for remaining matches.',
+    'Search CWE weaknesses by all text tokens, exact platform or consequence vocabulary, abstraction, status, mapping usage, view membership, a recorded taxonomy mapping (taxonomy name or entry ID such as CERT C ARR30-C), or a CVE that MITRE cites as an observed example. Text tokens match at word starts or camelCase humps; tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (trusted finds untrusted), with possible spelling coincidences. An exact closed spelling also matches Unicode letter words joined by single ASCII hyphens (hardcoded finds hard-coded). Text never matches an entry ID or CVE. When replacing one platform filter with its platform-independent class adds matches, a notice gives that repeat. Omit filters to browse; categories and groupings are excluded. Each result carries MITRE’s mapping usage, which says whether the entry may be used to map a vulnerability, and, under a taxonomy or CVE filter, every mapping or observed example that matched. Results order by all tokens in the name or in one recorded alternate term such as XSS, then all in the description, then any other match, then numeric ID. Description previews contain the first sentence; use cwe_get_weakness for complete sections. Follow nextCursor for remaining matches.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({ ...filtersShape, ...pagingShape }),
   output: z.object({
@@ -230,7 +260,9 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
         limit: z.number().int().describe('Effective page limit.'),
       })
       .describe('Applied filters and defaults.'),
-    notice: text('Empty-result or page-cap guidance.').optional(),
+    notice: text(
+      'Catalog caveats, independent platform repeats, empty-result or page-cap guidance.',
+    ).optional(),
     totalCount: z.number().int().describe('Complete matching count before paging.'),
     truncated: z.boolean().describe('Whether a page omits remaining matches.').optional(),
     shown: z.number().int().describe('Items shown on this page.').optional(),
@@ -286,7 +318,12 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
       throw serviceUnavailable('The loaded CWE catalog contains no weaknesses.', {
         retryable: false,
       });
-    const notice = searchNotice(snapshot, filters, matches.length > 0);
+    const notice = [
+      searchNotice(snapshot, filters, matches.length > 0),
+      ...independentPlatformNotices(snapshot, filters, matches),
+    ]
+      .filter(Boolean)
+      .join(' ');
     const { mapping, example } = evidenceMatchers(snapshot, filters);
     const previews = matches.map((entry) => {
       // searchWeaknesses kept this weakness only when each applied test matches one of its entries.
@@ -318,7 +355,7 @@ export const cweSearchWeaknesses = tool('cwe_search_weaknesses', {
       binding: ['cwe_search_weaknesses', filters],
       provenance: snapshot.provenance,
       appliedFilters: filters,
-      notice,
+      notice: notice || undefined,
       output: (page) => ({
         results: page.items,
         pagination: page.pagination,

@@ -46,6 +46,62 @@ const entry = (wire: Awaited<ReturnType<typeof runToolContract>>) =>
   (wire.structuredContent as { entries: Record<string, unknown>[] }).entries[0];
 
 describe('schema-8 delivery', () => {
+  it('delivers ordered mapping suggestions with literal comments and sparse target metadata', async () => {
+    await disposeCatalogService();
+    await load(
+      xml
+        .replace(
+          '<Reasons><Reason Type="Frequently-Resultant"/></Reasons>',
+          '<Rationale>Prefer the specific weakness.</Rationale><Comments>Check the root cause.</Comments><Reasons><Reason Type="Frequently-Resultant"/></Reasons><Suggestions><Suggestion CWE_ID="01461" Comment="Prefer *precise* &amp; literal [text](https://example.test)."/><Suggestion CWE_ID="999999"/><Suggestion CWE_ID="1209"/></Suggestions>',
+        )
+        .replace(
+          '<Description>Hardware.</Description>',
+          '<Description>Hardware.</Description><Mapping_Notes><Usage>Allowed</Usage><Suggestions/></Mapping_Notes>',
+        ),
+    );
+    const result = await runToolContract(cweGetWeakness, {
+      ids: ['1209', '1461', '900'],
+      sections: ['summary'],
+    });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      entries: [
+        {
+          mappingNotes: {
+            usage: 'Allowed',
+            rationale: 'Prefer the specific weakness.',
+            comments: 'Check the root cause.',
+            reasons: ['Frequently-Resultant'],
+          },
+        },
+        { id: 'CWE-1461', mappingNotes: { usage: 'Allowed' } },
+        { id: 'CWE-900', mappingNotes: { usage: 'Prohibited', reasons: ['Grouping'] } },
+      ],
+    });
+    const entries = (result.structuredContent as { entries: Record<string, unknown>[] }).entries;
+    expect(entries[0]?.mappingNotes).toHaveProperty('suggestions', [
+      {
+        id: 'CWE-1461',
+        comment: 'Prefer *precise* & literal [text](https://example.test).',
+        name: 'Custom only',
+      },
+      { id: 'CWE-999999' },
+      { id: 'CWE-1209', name: 'Schema eight weakness' },
+    ]);
+    for (const item of entries.slice(1))
+      expect(item.mappingNotes).not.toHaveProperty('suggestions');
+    const rendered = markdown(result).split('**suggestions**')[1] ?? '';
+    const parsed = parseMarkdown(rendered);
+    const comment = parseMarkdown(rendered.split('**comment**')[1]?.split('**name**')[0] ?? '');
+    expect(comment.text).toContain('Prefer *precise* & literal [text](https://example.test).');
+    expect(comment.nodes).not.toContain('emph');
+    expect(comment.nodes).not.toContain('link');
+    expect(parsed.text.indexOf('CWE-1461')).toBeLessThan(parsed.text.indexOf('CWE-999999'));
+    expect(parsed.text.indexOf('CWE-999999')).toBeLessThan(parsed.text.indexOf('CWE-1209'));
+    expect(parsed.text).toContain('Custom only');
+    expect(parsed.text).toContain('Schema eight weakness');
+  });
+
   it('characterizes existing defaults, empty lookup and invalid ID recovery', async () => {
     const result = await runToolContract(cweGetWeakness, { ids: ['1461'] });
     expect(entry(result)).toMatchObject({
@@ -245,14 +301,21 @@ describe('schema-8 delivery', () => {
       expect(parseMarkdown(labels).text).toContain(value);
   });
 
-  it('accounts for new summary bytes in default omissions and returns explicit metadata intact', async () => {
+  it('delivers large default summaries and explicit metadata intact', async () => {
     await disposeCatalogService();
     await load(
       xml.replace('Precise <xhtml:b>nuance</xhtml:b>.', `Precise ${'nuance '.repeat(4000)}`),
     );
     const defaults = await runToolContract(cweGetWeakness, { ids: ['1209'] });
-    expect(entry(defaults)).toMatchObject({ kind: 'partial', outline: [{ section: 'summary' }] });
-    expect(parseMarkdown(markdown(defaults)).text).toContain('summary');
+    const nuance = `Precise ${'nuance '.repeat(4000).trim()}\n\nSecond paragraph.`;
+    expect(entry(defaults)).toMatchObject({ kind: 'full', technicalNuance: nuance });
+    expect(entry(defaults)).not.toHaveProperty('outline');
+    expect(markdown(defaults)).toContain(
+      nuance
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n'),
+    );
     const selected = await runToolContract(cweGetWeakness, {
       ids: ['1209'],
       sections: ['summary'],
@@ -263,10 +326,7 @@ describe('schema-8 delivery', () => {
     expect(parseMarkdown(markdown(selected)).text).toContain(
       `Precise ${'nuance '.repeat(4000).trim()}`,
     );
-    expect(selected.structuredContent).toMatchObject({
-      guidance:
-        'One complete selected record and its metadata exceed the 24,000-byte response budget; returned intact to preserve forward progress.',
-    });
+    expect(selected.structuredContent).not.toHaveProperty('guidance');
   });
 
   it('keeps schema-8 fields across page re-slices and excludes Overlaps from hierarchy closure', async () => {

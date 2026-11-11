@@ -129,6 +129,8 @@ export interface Weakness {
     rationale?: string;
     comments?: string;
     reasons?: readonly string[];
+    /** Recorded alternatives in source order, with the target name attached when loaded. */
+    suggestions?: readonly { id: string; comment?: string; name?: string }[];
   };
   members?: readonly Member[];
   mitigations?: readonly {
@@ -198,6 +200,8 @@ export interface AttackPattern {
   abstraction: string;
   alternateTerms?: readonly AlternateTerm[];
   attackTechniqueIds?: readonly string[];
+  /** Direct child patterns derived from recorded ChildOf relations, ordered by numeric CAPEC ID. */
+  childAttackPatterns?: readonly Pick<AttackPattern, 'id' | 'name' | 'abstraction' | 'status'>[];
   consequences?: readonly Consequence[];
   description: string;
   exampleInstances?: readonly string[];
@@ -324,6 +328,13 @@ export interface Provenance {
   loadedAt: string;
 }
 
+/** Exact closed compound spellings, indexed by their original search fields. */
+export interface SearchAliases {
+  any: (token: string) => boolean;
+  description: (token: string) => boolean;
+  titles: readonly { text: string; hasAlias: (token: string) => boolean }[];
+}
+
 /** Complete published state; readers capture one snapshot per call. */
 export interface CatalogSnapshot {
   attackPatternsByWeakness: ReadonlyMap<string, readonly string[]>;
@@ -332,6 +343,7 @@ export interface CatalogSnapshot {
   cwe: CweCatalog;
   health: { cwe: CatalogHealth; capec: CatalogHealth };
   provenance: Provenance;
+  searchAliases: Record<'cwe' | 'capec', ReadonlyMap<string, SearchAliases>>;
   vocabulary: ReadonlyMap<string, readonly string[]>;
 }
 

@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCatalogSnapshot,
   evidenceMatchers,
+  labelTokenMatcher,
   recordedEntryId,
   resolveVocabulary,
   resolveWeaknessStatus,
@@ -105,6 +106,52 @@ function snapshot(entries: Weakness[], patterns: AttackPattern[] = [], views: Ca
 }
 
 describe('catalog indexes', () => {
+  it('ranks new closed spellings in their source fields and preserves legacy tiers', () => {
+    const data = snapshot([
+      weakness(1, { name: 'Hard-coded password', description: 'Hardcoded password.' }),
+      weakness(2, { name: 'Hardcoded password' }),
+      weakness(3, { name: 'Hard-coded', description: 'Password.' }),
+      weakness(4, { description: 'Hard-coded password.' }),
+      weakness(5, { alternateTerms: [{ term: 'Hard-coded password', description: 'Unrelated.' }] }),
+      weakness(6, { alternateTerms: [{ term: 'Hard-coded' }, { term: 'Password' }] }),
+      weakness(7, { alternateTerms: [{ term: 'Password', description: 'Hard-coded.' }] }),
+    ]);
+    expect(searchWeaknesses(data, { filter: 'hardcoded password' }).map(({ id }) => id)).toEqual([
+      'CWE-2',
+      'CWE-5',
+      'CWE-1',
+      'CWE-4',
+      'CWE-3',
+      'CWE-6',
+    ]);
+    expect(someTokenMatches(data, 'cwe', 'hardcoded missing')).toBe(true);
+  });
+
+  it('matches only exact closed Unicode letter compounds and leaves literal boundaries intact', () => {
+    const data = snapshot([
+      weakness(1, { name: 'Use-after-free, İş-Ölçüm and cafe\u0301-au-lait' }),
+      weakness(2, { name: 'hard--coded, hard coded, hard–coded, 3hard-coded, hard-coded3' }),
+      weakness(3, { name: 'Somehard-coded and un-trusted; resource and deserialization' }),
+      weakness(4, { name: 'Dash-cased and name-Suffix' }),
+    ]);
+    for (const filter of ['useafterfree', 'işölçüm', 'İŞÖLÇÜM', 'cafe\u0301aulait'])
+      expect(searchWeaknesses(data, { filter }).map(({ id }) => id)).toEqual(['CWE-1']);
+    for (const filter of [
+      'hardcoded',
+      'useafter',
+      'useafterfre',
+      'dashcase',
+      'rce',
+      'serialization',
+    ])
+      expect(searchWeaknesses(data, { filter })).toEqual([]);
+    expect(searchWeaknesses(data, { filter: 'somehardcoded untrusted namesuffix' })).toEqual([]);
+    expect(
+      searchWeaknesses(data, { filter: 'somehardcoded untrusted' }).map(({ id }) => id),
+    ).toEqual(['CWE-3']);
+    expect(searchWeaknesses(data, { filter: 'suffix' }).map(({ id }) => id)).toEqual(['CWE-4']);
+  });
+
   it('orders every matching weakness by name, description, then extended text and numeric ID', () => {
     const data = snapshot([
       ...Array.from({ length: 35 }, (_, index) => weakness(index + 100, { name: 'Noise' })),
@@ -814,6 +861,20 @@ describe('tokenMatcher', () => {
     ];
     for (const [label, token, build] of shapes)
       expectLinearTime(label, build, (text) => tokenMatcher(text)(token));
+  });
+
+  it('extracts closed compound spellings in linear thread CPU time', { timeout: 60_000 }, () => {
+    for (const unit of ['[[[[re-', 'ab-abab-ababa1 ', 'é\u0301-ab\n', 'a-']) {
+      const build = (length: number) =>
+        `${unit.repeat(Math.ceil(length / unit.length))}\nUse-after-free`;
+      const large = build(320_000);
+      for (let warm = 0; warm < 20; warm++) labelTokenMatcher(large)('useafterfree');
+      expectLinearTime(unit, build, (text) => {
+        const has = labelTokenMatcher(text);
+        expect(has('useafterfree')).toBe(true);
+        expect(has('useafter')).toBe(false);
+      });
+    }
   });
 
   it.each(

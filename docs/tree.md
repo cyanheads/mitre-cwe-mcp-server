@@ -1,6 +1,6 @@
 # mitre-cwe-mcp-server - Directory Structure
 
-Generated on: 2026-10-30 09:42:38
+Generated on: 2026-11-11 11:45:10
 
 ```text
 mitre-cwe-mcp-server/
@@ -202,11 +202,11 @@ mitre-cwe-mcp-server/
 │   │       ├── view-filter.test.ts
 │   │       └── xml-normalization.test.ts
 │   └── tools/
+│       ├── count-pagination.test.ts
 │       ├── detail-contract.test.ts
 │       ├── hierarchy-contract.test.ts
 │       ├── link-format.test.ts
 │       ├── list-contract.test.ts
-│       ├── response-budget.test.ts
 │       └── schema8-contract.test.ts
 ├── .dockerignore
 ├── .env.example

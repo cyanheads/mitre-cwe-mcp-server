@@ -5,16 +5,7 @@
 import type { CapecRecord, CatalogSnapshot, Provenance, Weakness } from '@/services/index.js';
 import { resolveVocabulary } from '@/services/index.js';
 import { attackPatternEntrySchema, weaknessEntrySchema } from './catalog-schemas.js';
-import {
-  batchIds,
-  deliveredSize,
-  type Family,
-  formatCatalog,
-  type IdPosition,
-  optionalText,
-  RESPONSE_BUDGET,
-  selectWithinBudget,
-} from './shared.js';
+import { batchIds, type Family, formatCatalog, type IdPosition, optionalText } from './shared.js';
 /** All supported CWE sections. */
 export const weaknessSections = [
   'summary',
@@ -80,7 +71,7 @@ const capecFields: SectionMap = {
   consequences: ['consequences'],
   mitigations: ['mitigations'],
   examples: ['exampleInstances'],
-  relations: ['relatedAttackPatterns', 'members', 'filterDefinition'],
+  relations: ['relatedAttackPatterns', 'childAttackPatterns', 'members', 'filterDefinition'],
   mappings: ['relatedWeaknesses', 'attackTechniqueIds', 'taxonomyMappings', 'references'],
   notes: ['notes'],
 };
@@ -96,31 +87,17 @@ function sectionSize(fields: Record<string, unknown>): number {
     Buffer.byteLength(JSON.stringify(formatCatalog(fields)[0].text))
   );
 }
-/**
- * The selected page of a paged section. Its fields stand in for the raw section in the entry and
- * in its outline size; `recall` names the parameters that select this page (empty when they all
- * hold their defaults), for every re-call text that requests the section.
- */
-type SectionPage = { section: string; fields: Record<string, unknown>; recall: string };
-/**
- * Project the selected sections of one record. `omitted` names selected sections left out to fit
- * the response budget (a `partial` entry); `undefined` asks for an identity outline instead.
- */
+/** Project the selected sections or an explicit outline of the available sections. */
 function project(
   entry: Weakness | CapecRecord,
   groups: SectionMap,
   sections: readonly string[],
-  omitted: readonly string[] | undefined,
   toolName: 'cwe_get_weakness' | 'cwe_get_attack_pattern',
-  provenance: Provenance,
-  page?: SectionPage,
+  exampleFields?: Record<string, unknown>,
 ) {
   const rawFieldsOf = (section: string) => pick(entry, groups[section] ?? []);
   const fieldsOf = (section: string) =>
-    section === page?.section ? page.fields : rawFieldsOf(section);
-  /** The page, when its parameters belong in a re-call that requests `requested`. */
-  const recalledPage = (requested: readonly string[]) =>
-    page?.recall && requested.includes(page.section) ? page : undefined;
+    section === 'examples' && exampleFields ? exampleFields : rawFieldsOf(section);
   const availableSections = Object.keys(groups).filter(
     (section) => Object.keys(rawFieldsOf(section)).length > 0,
   );
@@ -136,84 +113,28 @@ function project(
     requestedSections: [...sections],
     availableSections,
   };
-  const sized = (list: readonly string[]) =>
-    list.map((section) => ({ section, sizeInBytes: sectionSize(fieldsOf(section)) }));
-  if (sections.length === 0 || omitted === undefined) {
-    const paged = recalledPage(availableSections);
+  if (sections.length === 0) {
     return {
       ...identity,
       kind: 'outline' as const,
-      outline: sized(availableSections),
-      notice: `Repeat ${toolName} with this ID and explicit sections, one section at a time for large records${paged ? `; add ${paged.recall} when selecting ${paged.section}` : ''}.`,
+      outline: availableSections.map((section) => ({
+        section,
+        sizeInBytes: sectionSize(fieldsOf(section)),
+      })),
+      notice: `Repeat ${toolName} with this ID and explicit sections, one section at a time for large records.`,
     };
   }
   const absent = sections.filter((section) => !availableSections.includes(section));
-  /** Explicit single-record recalls have no deferrals or irrelevant example arguments. */
-  const recallFits = (requested: readonly string[]) => {
-    const result = {
-      entries: [project(entry, groups, requested, [], toolName, provenance, page)],
-      notFound: [],
-      deferredIds: [],
-      provenance,
-    };
-    return deliveredSize(result, detailEnrichment(result)) <= RESPONSE_BUDGET;
-  };
-  const recalls: string[][] = [];
-  for (const section of omitted) {
-    const current = recalls.at(-1);
-    if (current && recallFits([...current, section])) current.push(section);
-    else recalls.push([section]);
-  }
-  const notice = [
-    absent.length &&
-      `The source entry has no content for these selected sections: ${absent.join(', ')}.`,
-    omitted.length &&
-      `Omitted to fit the 24,000-byte response budget: ${omitted.join(', ')}. ${recalls.map((requested) => `Repeat ${toolName} with this ID and sections ${JSON.stringify(requested)}${recalledPage(requested) ? `, ${page?.recall}` : ''}.`).join(' ')}`,
-  ]
-    .filter(Boolean)
-    .join(' ');
   return {
     ...identity,
-    kind: omitted.length ? ('partial' as const) : ('full' as const),
-    ...Object.assign({}, ...sections.filter((section) => !omitted.includes(section)).map(fieldsOf)),
-    ...(omitted.length ? { outline: sized(omitted) } : {}),
-    ...(notice ? { notice } : {}),
+    kind: 'full' as const,
+    ...Object.assign({}, ...sections.map(fieldsOf)),
+    ...(absent.length
+      ? {
+          notice: `The source entry has no content for these selected sections: ${absent.join(', ')}.`,
+        }
+      : {}),
   };
-}
-
-/** Projected entry fields the section fill reads. */
-type Projected = { requestedSections: string[]; availableSections: string[] };
-/**
- * Fill a default selection: keep each selected section, in order, whose addition still lets
- * `respond(entry)` fit the budget, and outline the entry when none does. Returns the chosen entry
- * with its response; `fits` is false only for an outline that still does not fit.
- */
-function fillSections<T extends Projected, R>(
-  project: (omitted: readonly string[] | undefined) => T,
-  respond: (entry: T) => R,
-  fits: (response: R) => boolean,
-): { entry: T; response: R; fits: boolean } {
-  const full = project([]);
-  const whole = respond(full);
-  if (fits(whole)) return { entry: full, response: whole, fits: true };
-  const sections = full.requestedSections.filter((section) =>
-    full.availableSections.includes(section),
-  );
-  const kept: string[] = [];
-  let best: { entry: T; response: R } | undefined;
-  for (const section of sections) {
-    const entry = project(
-      sections.filter((candidate) => candidate !== section && !kept.includes(candidate)),
-    );
-    const response = respond(entry);
-    if (!fits(response)) continue;
-    kept.push(section);
-    best = { entry, response };
-  }
-  if (best) return { ...best, fits: true };
-  const outline = project(undefined);
-  const response = respond(outline);
-  return { entry: outline, response, fits: fits(response) };
 }
 
 type Miss = { id: string; reason: 'not_found' | 'wrong_type' | 'invalid_id'; guidance: string };
@@ -225,7 +146,7 @@ type DetailBatch<T> = {
   guidance?: string;
 };
 
-/** Totals and actual processed counts for a size- or count-limited detail batch. */
+/** Distinct position counts and whole-ID continuation for a detail batch. */
 export function detailEnrichment<T>(result: DetailBatch<T>) {
   const shown = result.entries.length + result.notFound.length;
   return {
@@ -236,97 +157,40 @@ export function detailEnrichment<T>(result: DetailBatch<T>) {
   };
 }
 
-/**
- * Resolve a batch from one snapshot, then defer whole IDs past the response budget. A default
- * selection is filled per record in its own response; when even the first record does not fit
- * beside the deferred-ID metadata, that record is refilled against the response carrying it.
- */
-function resolveDetails<S extends object, T extends Projected>(
+/** Resolve the first distinct positions in one snapshot and return the rest for continuation. */
+function resolveDetails<S extends object, T>(
   batch: { ids: IdPosition[]; deferredIds: string[] },
   provenance: Provenance,
   options: {
     family: Family;
     lookup: (id: string) => S | undefined;
-    /** A position that names no record of this family: absent, another family, or no ID at all. */
     miss: (position: IdPosition) => Miss;
-    /** Default selections omit whole sections that do not fit; explicit ones stay complete. */
-    fill: boolean;
-    project: (source: S, omitted: readonly string[] | undefined) => T;
+    project: (source: S) => T;
     toolName: string;
-    /** A call-level sentence closing the batch guidance, measured with every candidate response. */
     callGuidance?: string | undefined;
   },
 ): DetailBatch<T> {
-  const size = (result: DetailBatch<T>) => deliveredSize(result, detailEnrichment(result));
-  const fits = (result: DetailBatch<T>) => size(result) <= RESPONSE_BUDGET;
-  const found = new Map<string, { source: S; entry: T }>();
-  const absent = new Map<string, Miss>();
-  const ids = batch.ids.map((position) => position.id);
+  const entries: T[] = [];
+  const notFound: Miss[] = [];
   for (const position of batch.ids) {
-    const { id } = position;
-    const source = position.family === options.family ? options.lookup(id) : undefined;
-    if (!source) {
-      absent.set(id, options.miss(position));
-      continue;
-    }
-    const project = (omitted: readonly string[] | undefined) => options.project(source, omitted);
-    const entry = options.fill
-      ? fillSections(
-          project,
-          (candidate): DetailBatch<T> => ({
-            entries: [candidate],
-            notFound: [],
-            deferredIds: [],
-            provenance,
-          }),
-          fits,
-        ).entry
-      : project([]);
-    found.set(id, { source, entry });
+    const source = position.family === options.family ? options.lookup(position.id) : undefined;
+    if (source) entries.push(options.project(source));
+    else notFound.push(options.miss(position));
   }
-  /**
-   * The first `count` positions; `first` replaces the first record's entry. An oversized response
-   * names what overflows: the first result itself, or the deferred IDs echoed beside it.
-   */
-  const compose = (count: number, oversized: boolean, first?: T): DetailBatch<T> => {
-    const selected = ids.slice(0, count);
-    const deferredIds = [...ids.slice(count), ...batch.deferredIds];
-    const entries = selected.flatMap((id, index) =>
-      index === 0 && first ? [first] : (found.get(id)?.entry ?? []),
-    );
-    const notFound = selected.flatMap((id) => absent.get(id) ?? []);
-    const guidance = [
-      count < ids.length && 'The 24,000-byte response budget deferred whole identifiers.',
-      oversized &&
-        (fits({ entries, notFound, deferredIds: [], provenance })
-          ? 'The identifiers echoed in deferredIds exceed the 24,000-byte response budget beside the first result, which fits on its own; all are returned so none is lost.'
-          : 'One complete selected record and its metadata exceed the 24,000-byte response budget; returned intact to preserve forward progress.'),
-      deferredIds.length > 0 &&
-        `Repeat ${options.toolName} with deferredIds to retrieve the remaining entries.`,
-      options.callGuidance,
-    ]
-      .filter(Boolean)
-      .join(' ');
-    return {
-      entries,
-      notFound,
-      deferredIds,
-      ...(guidance ? { guidance } : {}),
-      provenance,
-    };
+  const guidance = [
+    batch.deferredIds.length > 0 &&
+      `Repeat ${options.toolName} with deferredIds to retrieve the remaining entries.`,
+    options.callGuidance,
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return {
+    entries,
+    notFound,
+    deferredIds: batch.deferredIds,
+    ...(guidance ? { guidance } : {}),
+    provenance,
   };
-  const build = (count: number, oversized: boolean): DetailBatch<T> => {
-    const first = found.get(ids[0] ?? '');
-    if (!oversized || !options.fill || !first) return compose(count, oversized);
-    // No prefix fits: refill the first record against the response that defers the rest.
-    const refill = fillSections(
-      (omitted) => options.project(first.source, omitted),
-      (entry) => compose(count, false, entry),
-      fits,
-    );
-    return refill.fits ? refill.response : compose(count, true, refill.entry);
-  };
-  return selectWithinBudget(ids.length, build, size);
 }
 /** NVD's placeholders for a vulnerability it could not map to a CWE entry. */
 const NVD_PLACEHOLDER = /^NVD-CWE-(?:noinfo|Other)$/i;
@@ -334,8 +198,8 @@ const NVD_PLACEHOLDER = /^NVD-CWE-(?:noinfo|Other)$/i;
 export const DEFAULT_EXAMPLE_LIMIT = 3;
 /**
  * Resolve CWE batches from one captured catalog snapshot. Example parameters in effect (a language,
- * an offset above 0, or a limit other than the default) add `examples` to a default selection, last
- * in fill order; an explicit selection without `examples` stays unchanged and the batch guidance
+ * an offset above 0, or a limit other than the default) add `examples` to a default selection.
+ * An explicit selection without `examples` stays unchanged and the batch guidance
  * gives the re-call that applies them.
  */
 export function getWeaknessDetails(
@@ -400,7 +264,6 @@ export function getWeaknessDetails(
   return resolveDetails(batch, snapshot.provenance, {
     toolName: 'cwe_get_weakness',
     family: 'CWE',
-    fill: input.sections === undefined,
     callGuidance:
       exampleArgs && !selectsExamples
         ? `The example parameters (${exampleArgs}) apply only to section examples, which the selected sections exclude. Repeat cwe_get_weakness with sections ${JSON.stringify([...sections, 'examples'])} to apply them.`
@@ -430,20 +293,16 @@ export function getWeaknessDetails(
           : 'Call cwe_search_weaknesses to find an existing CWE ID, then repeat cwe_get_weakness.',
       };
     },
-    project: (source, omitted) =>
+    project: (source) =>
       weaknessEntrySchema.parse(
         project(
           source,
           cweFields,
           sections,
-          omitted,
           'cwe_get_weakness',
-          snapshot.provenance,
-          source.examples === undefined
-            ? undefined
-            : selectsExamples
-              ? { section: 'examples', fields: examplePage(source.examples), recall: exampleArgs }
-              : { section: 'examples', fields: examplePage(source.examples, true), recall: '' },
+          source.examples && (selectsExamples || sections.length === 0)
+            ? examplePage(source.examples, !selectsExamples)
+            : undefined,
         ),
       ),
   });
@@ -464,7 +323,6 @@ export function getAttackPatternDetails(
   return resolveDetails(batch, snapshot.provenance, {
     toolName: 'cwe_get_attack_pattern',
     family: 'CAPEC',
-    fill: input.sections === undefined,
     lookup: (id): CapecRecord | undefined =>
       attackPatterns.get(id) ?? categories.get(id) ?? views.get(id),
     miss: ({ id, family }): Miss =>
@@ -488,15 +346,13 @@ export function getAttackPatternDetails(
               guidance:
                 'Call cwe_search_attack_patterns to find an existing CAPEC ID, then repeat cwe_get_attack_pattern.',
             },
-    project: (source, omitted) =>
+    project: (source) =>
       attackPatternEntrySchema.parse(
         project(
           source,
           capecFields,
           input.sections ?? capecDefaults[source.type],
-          omitted,
           'cwe_get_attack_pattern',
-          snapshot.provenance,
         ),
       ),
   });

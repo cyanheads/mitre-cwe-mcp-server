@@ -234,11 +234,11 @@ describe('cwe_get_hierarchy public contracts', () => {
     expect(urls).toEqual(['https://cwe-api.mitre.org/api/v1/cwe/1/children?view=1000']);
   });
 
-  it('pages edges within byte and count caps and keeps every page endpoint', async () => {
+  it('pages edges by count and keeps every page endpoint', async () => {
     const first = await call({ limit: 1000 });
     expect(first.isError).not.toBe(true);
     expect(first.structuredContent).toMatchObject({
-      pagination: { total: 105, hasMore: true },
+      pagination: { total: 105, shown: 100, hasMore: true },
       truncated: true,
       cap: 100,
       notice: expect.stringContaining('capped at 100'),
@@ -253,9 +253,7 @@ describe('cwe_get_hierarchy public contracts', () => {
         edges: { parentId: string; childId: string; viewId: string }[];
         pagination: { total: number; shown: number; nextCursor?: string };
       };
-      expect(Buffer.byteLength(JSON.stringify(wire))).toBeLessThanOrEqual(24000);
-      expect(data.edges.length).toBeGreaterThan(0);
-      expect(data.edges.length).toBeLessThanOrEqual(100);
+      expect(data.edges.length).toBe(seen.length === 0 ? 100 : 5);
       expect(data.pagination.total).toBe(105);
       expect(data.pagination.shown).toBe(data.edges.length);
       const ids = new Set(data.nodes.map((node) => `${node.viewId}:${node.id}`));
@@ -314,14 +312,24 @@ describe('cwe_get_hierarchy public contracts', () => {
       Data: raw(1, view),
       Children: [{ Data: raw(2, view), Children: [{ Data: raw(999, view), Children: null }] }],
     }));
-    const wire = await call({ direction: 'descendants', viewId: ' ALL ', limit: 1 });
-    expect(wire.isError).not.toBe(true);
-    expect(wire.structuredContent).toMatchObject({
-      viewId: 'all',
-      notice: expect.stringContaining('source drift'),
-      pagination: { total: 4, shown: 1 },
-    });
-    expect(JSON.stringify(wire.content)).toContain('source drift');
+    const pages = await walk({ direction: 'descendants', viewId: ' ALL ', limit: 1 });
+    expect(pages).toHaveLength(4);
+    expect(pages.flatMap(({ data }) => data.edges)).toEqual([
+      { viewId: 'CWE-1000', parentId: 'CWE-1', childId: 'CWE-2' },
+      { viewId: 'CWE-1000', parentId: 'CWE-2', childId: 'CWE-999' },
+      { viewId: 'CWE-1001', parentId: 'CWE-1', childId: 'CWE-2' },
+      { viewId: 'CWE-1001', parentId: 'CWE-2', childId: 'CWE-999' },
+    ]);
+    for (const { data, content } of pages) {
+      expect(data).toMatchObject({
+        viewId: 'all',
+        notice: expect.stringContaining('source drift'),
+        pagination: { total: 4, shown: 1 },
+      });
+      expect(new Set(keys(data))).toEqual(endpoints(data));
+      expect(content).toContain(edgeText(data.edges[0]!));
+      expect(content).toContain('source drift');
+    }
     expect(urls[0]).toBe('https://cwe-api.mitre.org/api/v1/cwe/1/descendants');
   });
 

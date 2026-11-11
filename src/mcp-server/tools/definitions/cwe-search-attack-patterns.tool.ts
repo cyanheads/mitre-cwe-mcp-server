@@ -41,46 +41,41 @@ const INCLUDE_INACTIVE =
   'Repeat cwe_search_attack_patterns with includeInactive true to include Deprecated and Obsolete patterns.';
 
 /**
- * Explain a zero-hit search. A text filter alone is named as applied, and its notice suggests only a
- * repeat that can return patterns: includeInactive when only excluded patterns match it, fewer terms
- * when one of its tokens matches on its own, otherwise different terms.
+ * Explain a zero-hit search. Check the full filter set before suggesting inactive patterns.
+ * For a text-only miss, suggest fewer terms only when one token matches on its own.
  */
 function searchNotice(snapshot: CatalogSnapshot, filters: AttackPatternFilters): string {
   const { filter, includeInactive, ...others } = filters;
-  if (filter !== undefined && !Object.keys(others).length) {
-    if (
-      !includeInactive &&
-      searchAttackPatterns(snapshot, { filter, includeInactive: true }).length
-    )
-      return `Only Deprecated or Obsolete patterns, which are excluded by default, matched ${filterPhrase(filter)}. ${INCLUDE_INACTIVE}`;
+  const textOnly = filter !== undefined && !Object.keys(others).length;
+  if (
+    !includeInactive &&
+    searchAttackPatterns(snapshot, { ...filters, includeInactive: true }).length
+  )
+    return `Only Deprecated or Obsolete patterns, which are excluded by default, matched ${textOnly ? filterPhrase(filter) : 'the applied filters'}. ${INCLUDE_INACTIVE}`;
+  if (textOnly) {
     return `No CAPEC pattern matched ${filterPhrase(filter)}. Repeat cwe_search_attack_patterns with ${termsRepeat(
       filter,
       () => someTokenMatches(snapshot, 'capec', filter, includeInactive),
     )}.`;
   }
-  return [
-    filters.cweId || filters.attackTechniqueId
-      ? 'No CAPEC mapping was recorded for these filters; this does not establish that no attack pattern applies. Repeat cwe_search_attack_patterns without the mapping filter or with a text filter.'
-      : `No CAPEC patterns matched the applied filters (${Object.entries(filters)
-          .map(([key, value]) => `${key}: ${escapeMarkdown(String(value))}`)
-          .join(
-            ', ',
-          )}). Call cwe_list_reference for supported vocabulary, or repeat cwe_search_attack_patterns with fewer filters.`,
-    !includeInactive && INCLUDE_INACTIVE,
-  ]
-    .filter(Boolean)
-    .join(' ');
+  if (filters.cweId || filters.attackTechniqueId)
+    return 'No CAPEC mapping was recorded for these filters; this does not establish that no attack pattern applies. Repeat cwe_search_attack_patterns without the mapping filter or with a text filter.';
+  return `No CAPEC patterns matched the applied filters (${Object.entries(filters)
+    .map(([key, value]) => `${key}: ${escapeMarkdown(String(value))}`)
+    .join(
+      ', ',
+    )}). Call cwe_list_reference for supported vocabulary, or repeat cwe_search_attack_patterns with fewer filters.`;
 }
 
 /** Search source CAPEC patterns without treating missing mappings as negative evidence. */
 export const cweSearchAttackPatterns = tool('cwe_search_attack_patterns', {
   title: 'Search CAPEC attack patterns',
   description:
-    'Search CAPEC attack patterns by every whitespace-separated text token, recorded CWE or ATT&CK mapping, abstraction, severity, or likelihood. Text tokens match at word starts or camelCase humps; tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (config finds misconfiguration), with possible spelling coincidences. Search other compounds such as deserialization as written. Parent ATT&CK techniques include recorded subtechniques; CWE mappings are exact without hierarchy expansion. Omit filters to browse. Deprecated and Obsolete patterns are excluded by default. Mappings are incomplete and do not validate current ATT&CK coverage. Results order by all tokens in the name or in one recorded alternate term such as MITM, then all in the description, then any other match, then numeric ID; use cwe_get_attack_pattern for complete sections and follow nextCursor for remaining matches.',
+    'Search CAPEC attack patterns by every whitespace-separated text token, recorded CWE or ATT&CK mapping, abstraction, severity, or likelihood. Text tokens match at word starts or camelCase humps; tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start (config finds misconfiguration), with possible spelling coincidences. An exact closed spelling also matches Unicode letter words joined by single ASCII hyphens (hardcoded finds hard-coded). Parent ATT&CK techniques include recorded subtechniques; CWE mappings are exact without hierarchy expansion. Omit filters to browse. Deprecated and Obsolete patterns are excluded by default. Mappings are incomplete and do not validate current ATT&CK coverage. Results order by all tokens in the name or in one recorded alternate term such as MITM, then all in the description, then any other match, then numeric ID; use cwe_get_attack_pattern for complete sections and follow nextCursor for remaining matches.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     filter: filterSchema(
-      'All-token case-insensitive filter over the name, recorded alternate terms, and description; each token matches at a word start or camelCase hump (path finds XPath). Tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start; spelling coincidences can match. Blank means unset.',
+      'All-token case-insensitive filter over the name, recorded alternate terms, and description; each token matches at a word start or camelCase hump (path finds XPath). Tokens of at least four Unicode letters also match after exactly one un or mis prefix at a word start; spelling coincidences can match. An exact closed spelling also matches Unicode letter words joined by single ASCII hyphens. Blank means unset.',
     ),
     cweId: z
       .string()

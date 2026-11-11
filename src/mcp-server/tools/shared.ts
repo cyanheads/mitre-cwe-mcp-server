@@ -55,9 +55,7 @@ export const pagingShape = {
     .min(1)
     .max(1000)
     .default(20)
-    .describe(
-      'Maximum page size; capped at 100 and a 24,000-byte response budget with disclosure.',
-    ),
+    .describe('Maximum page size; capped at 100 items with disclosure.'),
   cursor: text('Opaque continuation returned by this tool.').optional(),
 };
 /**
@@ -162,10 +160,8 @@ export const idsSchema = (family: Family) =>
           parseId(value, 'CAPEC') !== undefined,
         `An item that is not a catalog ID can be at most ${MAX_INVALID_ITEM} characters.`,
       ),
-    'One to 200 submitted IDs; up to 20 distinct items are processed within the response budget.',
-  )
-    .min(1)
-    .max(200);
+    'One or more IDs. The first 20 distinct positions are processed; later positions are returned in deferredIds.',
+  ).min(1);
 /** Whitespace-only optional text is unset at the handler boundary. */
 export function optionalText(value: string | undefined): string | undefined {
   return value?.trim() || undefined;
@@ -224,8 +220,7 @@ export function pageItems<T>(
   input: { limit: number; cursor?: string | undefined },
   binding: unknown,
   provenance: Provenance,
-  measure?: (page: CatalogPage<T>) => number,
-) {
+): CatalogPage<T> {
   const query = fingerprint([binding, provenance]);
   let offset = 0;
   if (input.cursor && optionalText(input.cursor)) {
@@ -258,34 +253,28 @@ export function pageItems<T>(
       );
     }
   }
-  const limit = Math.min(input.limit, 100);
-  const maximum = Math.min(limit, Math.max(0, items.length - offset));
-  const build = (count: number, oversized: boolean): CatalogPage<T> => {
-    const result = items.slice(offset, offset + count);
-    const next = offset + result.length;
-    const body = Buffer.from(JSON.stringify({ query, offset: next })).toString('base64url');
-    const notice = [
-      input.limit > 100 &&
-        'The requested limit was capped at 100 items; follow nextCursor for the remainder.',
-      count < maximum &&
-        'The 24,000-byte response budget reduced this page; follow nextCursor for the remainder.',
-      oversized &&
-        'One complete item and its metadata exceed the 24,000-byte response budget; returned intact to preserve forward progress.',
-    ]
-      .filter(Boolean)
-      .join(' ');
-    return {
-      items: result,
-      pagination: {
-        total: items.length,
-        shown: result.length,
-        hasMore: next < items.length,
-        ...(next < items.length ? { nextCursor: `${body}.${sign(body)}` } : {}),
-      },
-      ...(notice ? { notice } : {}),
-    };
+  const result = items.slice(offset, offset + Math.min(input.limit, 100));
+  const next = offset + result.length;
+  const hasMore = next < items.length;
+  const body = hasMore
+    ? Buffer.from(JSON.stringify({ query, offset: next })).toString('base64url')
+    : undefined;
+  return {
+    items: result,
+    pagination: {
+      total: items.length,
+      shown: result.length,
+      hasMore,
+      ...(body === undefined ? {} : { nextCursor: `${body}.${sign(body)}` }),
+    },
+    ...(input.limit > 100
+      ? {
+          notice: hasMore
+            ? 'The requested limit was capped at 100 items; follow nextCursor for the remainder.'
+            : 'The requested limit was capped at 100 items.',
+        }
+      : {}),
   };
-  return selectWithinBudget(maximum, build, measure);
 }
 
 /** Whole ordered page and its lossless continuation. */
@@ -295,60 +284,7 @@ interface CatalogPage<T> {
   pagination: { total: number; shown: number; hasMore: boolean; nextCursor?: string };
 }
 
-/** Target for the serialized MCP result, excluding its JSON-RPC framing. */
-export const RESPONSE_BUDGET = 24_000;
-
-/**
- * Select the largest whole prefix within the budget; an indivisible first item always makes
- * forward progress. Below the complete result, every candidate carries the same cut disclosure and
- * grows with its count, so a binary search finds the same prefix as a walk down from `maximum`.
- * When no prefix fits, one final `build(1, true)` returns the first item with its oversize
- * disclosure, so a call builds at most `ceil(log2(maximum)) + 2` times.
- */
-export function selectWithinBudget<T>(
-  maximum: number,
-  build: (count: number, oversized: boolean) => T,
-  measure: ((result: T) => number) | undefined,
-): T {
-  const fits = (result: T) => !measure || measure(result) <= RESPONSE_BUDGET;
-  const complete = build(maximum, false);
-  if (fits(complete)) return complete;
-  let fitting: T | undefined;
-  let low = Math.min(1, maximum);
-  let high = maximum - 1;
-  while (low <= high) {
-    const count = Math.ceil((low + high) / 2);
-    const result = build(count, false);
-    if (fits(result)) {
-      fitting = result;
-      low = count + 1;
-    } else high = count - 1;
-  }
-  return fitting ?? build(Math.min(1, maximum), true);
-}
-
-/** Enrichment shared by all paged tools, measured before it reaches either surface. */
-function pageEnrichment<T, F>(
-  page: CatalogPage<T>,
-  limit: number,
-  appliedFilters: F,
-  notice?: string,
-) {
-  const disclosure = [page.notice, notice].filter(Boolean).join(' ');
-  return {
-    totalCount: page.pagination.total,
-    appliedFilters,
-    ...(page.pagination.hasMore
-      ? { truncated: true, shown: page.items.length, cap: Math.min(limit, 100) }
-      : {}),
-    ...(disclosure ? { notice: disclosure } : {}),
-  };
-}
-
-/**
- * Page whole items within the response budget. The returned output and enrichment are
- * the ones measured; the effective limit joins the cursor binding and applied filters.
- */
+/** Page ordered items by count. Bind the effective limit to the cursor and echo it in filters. */
 export function pageResponse<T, O extends Record<string, unknown>, F extends object>(
   items: readonly T[],
   input: { limit: number; cursor?: string | undefined },
@@ -361,16 +297,18 @@ export function pageResponse<T, O extends Record<string, unknown>, F extends obj
   },
 ) {
   const limit = Math.min(input.limit, 100);
-  const enrichment = (page: CatalogPage<T>) =>
-    pageEnrichment(page, input.limit, { ...options.appliedFilters, limit }, options.notice);
-  const page = pageItems(
-    items,
-    input,
-    [...options.binding, limit],
-    options.provenance,
-    (candidate) => deliveredSize(options.output(candidate), enrichment(candidate)),
-  );
-  return { output: options.output(page), enrichment: enrichment(page) };
+  const page = pageItems(items, input, [...options.binding, limit], options.provenance);
+  const { total, shown, hasMore } = page.pagination;
+  const notice = [page.notice, options.notice].filter(Boolean).join(' ');
+  return {
+    output: options.output(page),
+    enrichment: {
+      totalCount: total,
+      appliedFilters: { ...options.appliedFilters, limit },
+      ...(hasMore ? { truncated: true, shown, cap: limit } : {}),
+      ...(notice ? { notice } : {}),
+    },
+  };
 }
 
 const sentences = new Intl.Segmenter('en', { granularity: 'sentence' });
@@ -579,7 +517,7 @@ function renderEnrichment(key: string, value: unknown): string {
   // Close the final Markdown container so the framework joins every field identically.
   return `${key === 'totalCount' ? `**${String(value)} total**` : formatCatalog({ [key]: value })[0].text}\n\n`;
 }
-/** The same explicit enrichment renderers drive delivery and byte accounting. */
+/** Render enrichment for catalog responses. */
 export const catalogEnrichmentTrailer = Object.fromEntries(
   ['totalCount', 'appliedFilters', 'truncated', 'shown', 'cap', 'notice'].map((key) => [
     key,
@@ -590,27 +528,3 @@ export const catalogEnrichmentTrailer = Object.fromEntries(
 export const detailEnrichmentTrailer = Object.fromEntries(
   Object.entries(catalogEnrichmentTrailer).filter(([key]) => key !== 'appliedFilters'),
 );
-
-/** Measure both complete MCP surfaces, including the enrichment trailer. */
-export function deliveredSize(
-  domain: Record<string, unknown>,
-  enrichment: Record<string, unknown>,
-): number {
-  const fields = Object.entries(enrichment).filter(([, value]) => value !== undefined);
-  const content = formatCatalog(domain);
-  const trailer = fields.length
-    ? [
-        {
-          type: 'text',
-          text: `\n\n${fields.map(([key, value]) => renderEnrichment(key, value)).join('\n')}`,
-        },
-      ]
-    : [];
-  return Buffer.byteLength(
-    JSON.stringify({
-      structuredContent: { ...domain, ...enrichment },
-      content: [...content, ...trailer],
-    }),
-    'utf8',
-  );
-}

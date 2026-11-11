@@ -222,6 +222,8 @@ const copied = (wire: Wire, key: string) =>
   lines(wire).flatMap((line, index, all) =>
     line === `**${key}**` ? [all[index + 2]?.replace(/^> /, '') ?? ''] : [],
   );
+const structuredNotice = (wire: Wire) =>
+  (wire.structuredContent as { notice?: string } | undefined)?.notice;
 /** The continuation as an agent copies it out of `content[]`, backticks removed. */
 function copiedCursor(wire: Wire): string | undefined {
   const rendered = lines(wire);
@@ -236,6 +238,182 @@ afterEach(async () => {
 });
 
 describe('complete local search and view contracts', () => {
+  it('matches closed compounds and suggests viable fewer-term repeats on every text filter', async () => {
+    await disposeCatalogService();
+    await load(
+      undefined,
+      (xml) =>
+        xml
+          .replace('Class="Server"', 'Class="Not Technology-Specific"')
+          .replace('</Weaknesses>', weakness(9010, 'Use-after-free', 'Example.') + '</Weaknesses>'),
+      (xml) =>
+        xml.replace(
+          '</Attack_Patterns>',
+          [
+            pattern(9010, 'Hardcoded', 'Literal.'),
+            pattern(9011, 'Example', 'Uses hard-coded credentials.'),
+          ].join('') + '</Attack_Patterns>',
+        ),
+    );
+    for (const [definition, args, key, values] of [
+      [cweSearchWeaknesses, { filter: 'useafterfree' }, 'id', ['CWE-9010']],
+      [cweSearchAttackPatterns, { filter: 'hardcoded' }, 'id', ['CAPEC-9010', 'CAPEC-9011']],
+      [
+        cweListReference,
+        { topic: 'platforms', filter: 'technologyspecific' },
+        'label',
+        ['Not Technology-Specific'],
+      ],
+      [
+        cweListReference,
+        { topic: 'platforms', filter: 'technology-specific' },
+        'label',
+        ['Not Technology-Specific'],
+      ],
+    ] as const) {
+      const hit = await runToolContract(definition, args);
+      expect(hit.structuredContent).toMatchObject({ totalCount: values.length });
+      expect(copied(hit, key)).toEqual(values);
+      const miss = await runToolContract(definition, { ...args, filter: `${args.filter} missing` });
+      expect(miss.structuredContent).toMatchObject({ totalCount: 0 });
+      expect(structuredNotice(miss)).toContain('fewer terms');
+      expect(copied(miss, 'notice')).toEqual([structuredNotice(miss)]);
+    }
+  });
+
+  it('folds dotted i only once when searching plain catalog text', async () => {
+    await disposeCatalogService();
+    await load(undefined, (xml) =>
+      xml.replace('</Weaknesses>', weakness(9010, 'Literal ii pair', 'Example.') + '</Weaknesses>'),
+    );
+    const wire = await runToolContract(cweSearchWeaknesses, { filter: 'ii\u0307\u0307' });
+    expect(wire.structuredContent).toMatchObject({ results: [], totalCount: 0 });
+    expect(copied(wire, 'id')).toEqual([]);
+  });
+
+  it('keeps platform searches exact when the independent class is absent', async () => {
+    const first = await runToolContract(cweSearchWeaknesses, { language: 'compiled', limit: 1 });
+    expect(copied(first, 'id')).toEqual(['CWE-10']);
+    expect(first.structuredContent).toMatchObject({
+      results: [{ id: 'CWE-10' }],
+      totalCount: 1,
+      appliedFilters: { language: 'Compiled', limit: 1 },
+    });
+    expect(copiedCursor(first)).toBeUndefined();
+    expect(structuredNotice(first)).toBeUndefined();
+    const miss = await runToolContract(cweSearchWeaknesses, {
+      language: 'Compiled',
+      viewId: '1001',
+    });
+    expect(miss.structuredContent).toMatchObject({ results: [], totalCount: 0 });
+  });
+
+  it('reports only new IDs from exact independent platform repeats on both surfaces', async () => {
+    await disposeCatalogService();
+    const platforms = (language: string, technology: string) =>
+      `<Applicable_Platforms>${language}${technology}</Applicable_Platforms>`;
+    const specificLanguage = '<Language Name="C"/>';
+    const independentLanguage = '<Language Class="Not Language-Specific"/>';
+    const specificTechnology = '<Technology Name="Web Server"/>';
+    const independentTechnology = '<Technology Class="Not Technology-Specific"/>';
+    await load(undefined, (xml) =>
+      xml.replace(
+        '</Weaknesses>',
+        [
+          weakness(
+            601,
+            'needle',
+            'Normal.',
+            child(12) + platforms(specificLanguage, specificTechnology + independentTechnology),
+          ),
+          weakness(
+            602,
+            'needle',
+            'Normal.',
+            child(601) + platforms(independentLanguage, specificTechnology),
+          ),
+          weakness(
+            603,
+            'needle',
+            'Normal.',
+            child(602) + platforms(specificLanguage, independentTechnology),
+          ),
+          weakness(
+            604,
+            'needle',
+            'Normal.',
+            child(603) + platforms(independentLanguage, independentTechnology),
+          ),
+          weakness(605, 'needle', 'Off-view.', platforms(independentLanguage, specificTechnology)),
+          weakness(
+            606,
+            'other',
+            'Wrong text.',
+            child(12) + platforms(independentLanguage, specificTechnology),
+          ),
+          weakness(
+            607,
+            'needle',
+            'Wrong status.',
+            child(12) + platforms(independentLanguage, specificTechnology),
+            'Deprecated',
+          ),
+        ].join('') + '</Weaknesses>',
+      ),
+    );
+    const query = {
+      filter: 'needle',
+      language: 'C',
+      technology: 'Web Server',
+      viewId: '1000',
+      status: 'Stable',
+      limit: 1,
+    };
+    const first = await runToolContract(cweSearchWeaknesses, query);
+    const cursor = copiedCursor(first);
+    expect(cursor).toBeDefined();
+    const second = await runToolContract(cweSearchWeaknesses, { ...query, cursor });
+    expect(copied(first, 'id')).toEqual(['CWE-10']);
+    expect(copied(second, 'id')).toEqual(['CWE-601']);
+    for (const page of [first, second]) {
+      const notice = String(structuredNotice(page));
+      expect(notice).toContain('language with Not Language-Specific');
+      expect(notice).toContain('technology with Not Technology-Specific');
+      expect(notice.match(/1 additional weakness/g)).toHaveLength(2);
+      expect(notice).toContain('without cursor');
+      expect(notice).toContain('deduplicate by CWE ID');
+      expect(copied(page, 'notice')).toEqual([notice]);
+    }
+    const language = await runToolContract(cweSearchWeaknesses, {
+      ...query,
+      language: 'Not Language-Specific',
+    });
+    expect(copied(language, 'id')).toEqual(['CWE-602']);
+    expect(String(structuredNotice(language))).not.toContain('language with Not Language-Specific');
+    const technology = await runToolContract(cweSearchWeaknesses, {
+      ...query,
+      technology: 'Not Technology-Specific',
+      limit: 101,
+    });
+    expect(copied(technology, 'id')).toEqual(['CWE-601', 'CWE-603']);
+    expect(String(structuredNotice(technology))).toContain('capped at 100');
+    const miss = await runToolContract(cweSearchWeaknesses, {
+      ...query,
+      language: 'Compiled',
+      technology: 'Not Technology-Specific',
+    });
+    expect(miss.structuredContent).toMatchObject({ results: [], totalCount: 0 });
+    expect(String(structuredNotice(miss))).toContain('language with Not Language-Specific');
+    expect(copied(miss, 'notice')).toEqual([structuredNotice(miss)]);
+    const stale = await runToolContract(cweSearchWeaknesses, {
+      ...query,
+      language: 'Not Language-Specific',
+      cursor,
+    });
+    expect(stale.isError).toBe(true);
+    expect(JSON.stringify(stale.content)).toContain('invalid_cursor');
+  });
+
   it('filters the full corpus before paging, ranks complete token matches and excludes categories', async () => {
     const first = await search({ filter: ' NEEDLE   ALPHA ', limit: 2 });
     expect(cweSearchWeaknesses.output.safeParse(first).success).toBe(true);
@@ -684,6 +862,52 @@ describe('complete local search and view contracts', () => {
     }
   });
 
+  it('offers inactive CAPEC repeats only when the full repeat finds a pattern', async () => {
+    await disposeCatalogService();
+    await load(undefined, undefined, (xml) =>
+      xml.replace(
+        '</Attack_Patterns>',
+        [
+          pattern(9010, 'Retired use-after-free', 'Example.', mapping(10, '1190'), 'Deprecated'),
+          pattern(9011, 'Old pattern', 'Example.', mapping(10, '1190.001'), 'Obsolete', 'Standard'),
+        ].join('') + '</Attack_Patterns>',
+      ),
+    );
+    for (const [query, expectedIds] of [
+      [{ attackTechniqueId: 'T9999' }, []],
+      [{ abstraction: 'Meta', likelihood: 'Medium', severity: 'High' }, []],
+      [{ filter: 'useafterfree', abstraction: 'Standard', attackTechniqueId: 'T1190' }, []],
+      [{ filter: 'useafterfree', abstraction: 'Detailed' }, ['CAPEC-9010']],
+      [
+        { filter: 'useafterfree', abstraction: 'Detailed', attackTechniqueId: 'T1190' },
+        ['CAPEC-9010'],
+      ],
+      [{ attackTechniqueId: 'T1190' }, ['CAPEC-9010', 'CAPEC-9011']],
+    ] as const) {
+      const miss = await runToolContract(cweSearchAttackPatterns, query);
+      expect(miss.structuredContent).toMatchObject({ totalCount: 0, results: [] });
+      const notice = String(structuredNotice(miss));
+      expect(copied(miss, 'notice')).toEqual([notice]);
+      expect(notice.includes('includeInactive true')).toBe(expectedIds.length > 0);
+      expect(notice.includes('Only Deprecated or Obsolete patterns')).toBe(expectedIds.length > 0);
+      if ('attackTechniqueId' in query)
+        expect(notice.includes('No CAPEC mapping was recorded')).toBe(expectedIds.length === 0);
+      const repeat = await runToolContract(cweSearchAttackPatterns, {
+        ...query,
+        includeInactive: true,
+      });
+      expect(repeat.structuredContent).toMatchObject({
+        totalCount: expectedIds.length,
+        results: expectedIds.map((id) => ({
+          id,
+          relatedWeaknesses: [{ id: 'CWE-10', name: 'needle alpha' }],
+        })),
+      });
+      expect(copied(repeat, 'id').filter((id) => id.startsWith('CAPEC-'))).toEqual(expectedIds);
+      expect(String(structuredNotice(repeat))).not.toContain('includeInactive true');
+    }
+  });
+
   it('discloses empty matches and incomplete mappings on both consumption paths', async () => {
     const textMiss = await runToolContract(cweSearchWeaknesses, { filter: 'no nonexistent' });
     const filterMiss = await runToolContract(cweSearchWeaknesses, {
@@ -705,7 +929,7 @@ describe('complete local search and view contracts', () => {
       JSON.stringify(mappingMiss.structuredContent),
     ]) {
       expect(surface).toContain('does not establish');
-      expect(surface).toContain('includeInactive true');
+      expect(surface).not.toContain('includeInactive true');
     }
     // Neither token matches on its own here, so fewer terms could not return a weakness.
     expect(JSON.stringify(textMiss.content)).toContain('different terms');
@@ -722,7 +946,7 @@ describe('complete local search and view contracts', () => {
       [
         cweSearchAttackPatterns,
         { filter: '_x_ [y](z)', severity: 'high' },
-        'No CAPEC patterns matched the applied filters (includeInactive: false, filter: _x_ [y](z), severity: High). Call cwe_list_reference for supported vocabulary, or repeat cwe_search_attack_patterns with fewer filters. Repeat cwe_search_attack_patterns with includeInactive true to include Deprecated and Obsolete patterns.',
+        'No CAPEC patterns matched the applied filters (includeInactive: false, filter: _x_ [y](z), severity: High). Call cwe_list_reference for supported vocabulary, or repeat cwe_search_attack_patterns with fewer filters.',
       ],
       // Rendered at a paragraph start, this filter could define a link that the notice then uses.
       [
@@ -1091,7 +1315,6 @@ describe('complete local search and view contracts', () => {
               ? await runToolContract(cweSearchAttackPatterns, args)
               : await runToolContract(cweGetView, { id: '1000', limit: 101, cursor });
         expect(wire.isError).not.toBe(true);
-        expect(Buffer.byteLength(JSON.stringify(wire))).toBeLessThanOrEqual(24000);
         const data = wire.structuredContent as {
           results?: { id: string }[];
           members?: { id: string }[];
@@ -1103,8 +1326,7 @@ describe('complete local search and view contracts', () => {
         expect(data.pagination.total).toBe(total);
         expect(data.totalCount).toBe(total);
         expect(data.pagination.shown).toBe(rows.length);
-        expect(rows.length).toBeGreaterThan(0);
-        expect(rows.length).toBeLessThanOrEqual(100);
+        expect(rows.length).toBe(Math.min(100, total - seen.length));
         for (const row of rows) expect(lines(wire)).toContain(`> ${row.id}`);
         seen.push(...rows.map((row) => row.id));
         // Continue with the cursor exactly as a content[]-only agent copies it.
