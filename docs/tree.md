@@ -1,6 +1,6 @@
 # mitre-cwe-mcp-server - Directory Structure
 
-Generated on: 2026-11-11 11:45:10
+Generated on: 2026-11-11 12:17:58
 
 ```text
 mitre-cwe-mcp-server/
@@ -26,6 +26,7 @@ mitre-cwe-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
+│   ├── 0.3.x/
 │   └── template.md
 ├── docs/
 │   └── design.md

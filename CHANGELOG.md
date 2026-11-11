@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-11-11 · ⚠️ Breaking
+
+Detail calls return complete sections, search recognizes closed compounds, and catalog refreshes use HTTP validators.
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-30
 
 Load CWE 5.0 catalogs and publish a CWE/CAPEC guide over MCP, with mcp-ts-core 0.13.18 and updated artifact delivery.
