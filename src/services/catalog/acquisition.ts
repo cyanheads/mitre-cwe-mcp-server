@@ -321,6 +321,11 @@ export interface AcquiredCatalog<T> {
   lastModified?: string;
 }
 
+type Validators = Pick<AcquiredCatalog<unknown>, 'etag' | 'lastModified'>;
+
+/** Revalidation either downloads a replacement or confirms the served representation. */
+export type CatalogAcquisition<T> = AcquiredCatalog<T> | ({ unchanged: true } & Validators);
+
 /**
  * Parse a CWE archive from a download or the cache. A MITRE error page served as the archive is
  * reported as a retryable upstream failure rather than a malformed archive.
@@ -344,55 +349,40 @@ export function parseCapecBytes(bytes: Uint8Array): CapecCatalog {
  * Validators also render as plain values. Fetch strips HTTP whitespace from header edges but keeps
  * a no-break space, which an entity tag cannot hold outside its quotes, so the edges are trimmed.
  */
-function validators(response: Response): { etag?: string; lastModified?: string } {
+function validators(response: Response): Validators {
   const etag = response.headers.get('etag')?.trim();
   const lastModified = response.headers.get('last-modified')?.trim();
   return {
-    ...(etag !== undefined ? { etag } : {}),
-    ...(lastModified !== undefined ? { lastModified } : {}),
+    ...(etag && etag !== '*' ? { etag } : {}),
+    ...(lastModified ? { lastModified } : {}),
   };
 }
 
-/** One source pipeline owns retries, including its stream and deterministic parser. */
-export function acquireCwe(
+/** The retry attempt owns the response stream and parser for either catalog. */
+function acquireCatalog<T>(
+  url: string,
+  limit: number,
+  parse: (bytes: Uint8Array, signal: AbortSignal) => T,
+  operation: string,
   request: HttpRequest,
   context: RequestContext,
   signal: AbortSignal,
-): Promise<AcquiredCatalog<CweCatalog>> {
+  previous?: Validators,
+): Promise<CatalogAcquisition<T>> {
+  const etag = previous?.etag?.trim();
+  const lastModified = previous?.lastModified?.trim();
+  const headers: Record<string, string> | undefined =
+    etag && etag !== '*'
+      ? { 'If-None-Match': etag }
+      : lastModified
+        ? { 'If-Modified-Since': lastModified }
+        : undefined;
   return withRetry(
     async (attempt) => {
-      const response = await ensureStatus(
-        await request(SOURCE_URLS.cwe, { signal: attempt.signal }, attempt.remainingMs, context),
-      );
-      const bytes = await readBoundedBody(response, BYTE_LIMITS.cweDownload, attempt.signal);
-      const catalog = parseCweBytes(bytes, attempt.signal);
-      attempt.signal.throwIfAborted();
-      return { bytes, catalog, ...validators(response) };
-    },
-    sourceRetry('acquireCwe', context, signal),
-  );
-}
-
-/** A 304 is a successful unchanged result, never an exception-shaped fallback. */
-export function acquireCapec(
-  request: HttpRequest,
-  context: RequestContext,
-  signal: AbortSignal,
-  previous?: { etag?: string; lastModified?: string },
-): Promise<
-  AcquiredCatalog<CapecCatalog> | { unchanged: true; etag?: string; lastModified?: string }
-> {
-  return withRetry(
-    async (attempt) => {
-      const headers: Record<string, string> = previous?.etag
-        ? { 'If-None-Match': previous.etag }
-        : previous?.lastModified
-          ? { 'If-Modified-Since': previous.lastModified }
-          : {};
       const response = await ensureStatus(
         await request(
-          SOURCE_URLS.capec,
-          { signal: attempt.signal, headers, acceptNotModified: true },
+          url,
+          { signal: attempt.signal, headers: headers ?? {}, acceptNotModified: true },
           attempt.remainingMs,
           context,
         ),
@@ -400,19 +390,58 @@ export function acquireCapec(
       );
       if (response.status === 304) {
         await response.body?.cancel();
-        if (!previous)
-          throw serializationError('MITRE returned 304 before a CAPEC catalog was loaded.', {
+        attempt.signal.throwIfAborted();
+        if (!headers)
+          throw serializationError('MITRE returned 304 without a conditional catalog request.', {
             reason: 'invalid_catalog',
             retryable: false,
           });
         return { unchanged: true, ...validators(response) };
       }
-      const bytes = await readBoundedBody(response, BYTE_LIMITS.capecXml, attempt.signal);
-      const catalog = parseCapecBytes(bytes);
+      const bytes = await readBoundedBody(response, limit, attempt.signal);
+      const catalog = parse(bytes, attempt.signal);
       attempt.signal.throwIfAborted();
       return { bytes, catalog, ...validators(response) };
     },
-    sourceRetry('acquireCapec', context, signal),
+    sourceRetry(operation, context, signal),
+  );
+}
+
+/** Download the CWE ZIP or revalidate it against the served catalog's validators. */
+export function acquireCwe(
+  request: HttpRequest,
+  context: RequestContext,
+  signal: AbortSignal,
+  previous?: Validators,
+): Promise<CatalogAcquisition<CweCatalog>> {
+  return acquireCatalog(
+    SOURCE_URLS.cwe,
+    BYTE_LIMITS.cweDownload,
+    parseCweBytes,
+    'acquireCwe',
+    request,
+    context,
+    signal,
+    previous,
+  );
+}
+
+/** Download the CAPEC XML or revalidate it against the served catalog's validators. */
+export function acquireCapec(
+  request: HttpRequest,
+  context: RequestContext,
+  signal: AbortSignal,
+  previous?: Validators,
+): Promise<CatalogAcquisition<CapecCatalog>> {
+  return acquireCatalog(
+    SOURCE_URLS.capec,
+    BYTE_LIMITS.capecXml,
+    parseCapecBytes,
+    'acquireCapec',
+    request,
+    context,
+    signal,
+    previous,
   );
 }
 

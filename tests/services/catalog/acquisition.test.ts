@@ -180,6 +180,7 @@ describe('acquisition pipelines', () => {
       );
     const cwe = await acquireCwe(request, context(), signal());
     const capec = await acquireCapec(request, context(), signal());
+    if ('unchanged' in cwe) throw new Error('Expected a CWE download');
     expect(cwe).toMatchObject({
       catalog: { version: '4.test', date: '2026-04-30' },
       etag: 'cwe-tag',
@@ -201,7 +202,8 @@ describe('acquisition pipelines', () => {
       .mockResolvedValueOnce(new Response(capecBytes));
     const cwe = await acquireCwe(request, context(), signal());
     const capec = await acquireCapec(request, context(), signal());
-    if ('unchanged' in capec) throw new Error('Expected a CAPEC download');
+    if ('unchanged' in cwe || 'unchanged' in capec)
+      throw new Error('Expected both catalog downloads');
     expect(cwe.bytes).toEqual(cweBytes);
     expect(capec.bytes).toEqual(capecBytes);
     expect(parseCweBytes(cweBytes, signal())).toEqual(cwe.catalog);
@@ -389,6 +391,49 @@ describe('acquisition through the production HTTP adapter', () => {
     await vi.runAllTimersAsync();
     return outcome;
   };
+
+  it.each([
+    [
+      { etag: 'W/"prior"', lastModified: 'Tue, 24 Jan 2023 00:00:00 GMT' },
+      ['if-none-match', 'W/"prior"'],
+    ],
+    [
+      { lastModified: 'Tue, 24 Jan 2023 00:00:00 GMT' },
+      ['if-modified-since', 'Tue, 24 Jan 2023 00:00:00 GMT'],
+    ],
+  ] as const)(
+    'retries CWE transport failures before accepting a conditional 304 (%j)',
+    async (previous, header) => {
+      vi.useFakeTimers();
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(new Response(null, { status: 503 }))
+        .mockRejectedValueOnce(new TypeError('private transport details'))
+        .mockResolvedValueOnce(new Response(null, { status: 304 }));
+      vi.stubGlobal('fetch', fetch);
+      expect(await settle(acquireCwe(defaultHttpRequest, context(), signal(), previous))).toEqual({
+        unchanged: true,
+      });
+      expect(fetch).toHaveBeenCalledTimes(3);
+      for (const [url, options] of fetch.mock.calls) {
+        expect(url).toBe(SOURCE_URLS.cwe);
+        expect([...new Headers(options?.headers)]).toEqual([header]);
+      }
+    },
+  );
+
+  it.each([undefined, {}, { etag: '  ', lastModified: ' ' }, { etag: '*' }])(
+    'rejects an unsolicited 304 without retrying (%j)',
+    async (previous) => {
+      const fetch = stubFetch(() => new Response(null, { status: 304 }));
+      await expect(
+        acquireCwe(defaultHttpRequest, context(), signal(), previous),
+      ).rejects.toMatchObject({
+        data: { reason: 'invalid_catalog', retryable: false },
+      });
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     [401, JsonRpcErrorCode.Unauthorized, false],

@@ -15,6 +15,7 @@ import {
   acquireCapec,
   acquireCwe,
   acquireCweVersion,
+  type CatalogAcquisition,
   defaultHttpRequest,
   parseCapecBytes,
   parseCweBytes,
@@ -176,8 +177,12 @@ export class CatalogService {
 
   /** Each source starts from a usable cached copy without a request, otherwise from MITRE. */
   private async loadInitial(): Promise<void> {
-    const cwe = this.initialCwe();
-    const capec = this.initialCapec();
+    const cwe = this.loadSource(
+      'cwe',
+      (bytes) => parseCweBytes(bytes, this.owner.signal),
+      acquireCwe,
+    );
+    const capec = this.loadSource('capec', parseCapecBytes, acquireCapec);
     try {
       const [loadedCwe, loadedCapec] = await Promise.all([cwe, capec]);
       this.owner.signal.throwIfAborted();
@@ -199,22 +204,24 @@ export class CatalogService {
     }
   }
 
-  private async initialCwe(): Promise<Loaded<CweCatalog>> {
-    const cached = await this.fromCache('cwe', (bytes) => parseCweBytes(bytes, this.owner.signal));
+  private async loadSource<T extends CatalogMetadata>(
+    source: CachedSource,
+    parse: (bytes: Uint8Array) => T,
+    acquire: (
+      request: HttpRequest,
+      context: RequestContext,
+      signal: AbortSignal,
+    ) => Promise<CatalogAcquisition<T>>,
+  ): Promise<Loaded<T>> {
+    const cached = await this.fromCache(source, parse);
     if (cached) return cached;
-    return this.save('cwe', await acquireCwe(this.request, this.context, this.owner.signal));
-  }
-
-  private async initialCapec(): Promise<Loaded<CapecCatalog>> {
-    const cached = await this.fromCache('capec', parseCapecBytes);
-    if (cached) return cached;
-    const loaded = await acquireCapec(this.request, this.context, this.owner.signal);
+    const loaded = await acquire(this.request, this.context, this.owner.signal);
     if ('unchanged' in loaded)
-      throw configurationError('CAPEC cannot be unchanged before initialization.', {
+      throw configurationError('A catalog cannot be unchanged before initialization.', {
         reason: 'catalog_not_initialized',
         retryable: false,
       });
-    return this.save('capec', loaded);
+    return this.save(source, loaded);
   }
 
   /**
@@ -314,35 +321,22 @@ export class CatalogService {
   }
 
   private refreshCwe(snapshot: CatalogSnapshot): Promise<Refreshed<CweCatalog>> {
-    const health = snapshot.health.cwe;
     const checkedAt = iso(this.clock.now());
     return this.withSourceDeadline(async (signal) => {
       const api = await acquireCweVersion(this.request, this.context, signal);
-      const loaded =
-        api.version !== snapshot.cwe.version
-          ? await this.save('cwe', await acquireCwe(this.request, this.context, signal))
-          : undefined;
-      const { catalog: candidate = snapshot.cwe, ...origin }: Partial<Loaded<CweCatalog>> =
-        loaded ?? {};
-      const changed =
-        candidate.version !== snapshot.cwe.version || candidate.date !== snapshot.cwe.date;
-      const catalog = changed ? candidate : snapshot.cwe;
-      return {
-        catalog,
-        changed,
-        health: {
-          ...(loaded ? withoutValidators(clearFailure(health)) : clearFailure(health)),
-          version: catalog.version,
-          date: catalog.date,
-          ...origin,
-          apiVersion: api.version,
-          apiDate: api.date,
-          lastCheckAt: checkedAt,
-          lastSuccessfulCheckAt: iso(this.clock.now()),
-          nextCheckAt: iso(this.clock.now() + REFRESH_INTERVALS.cwe),
-          ...(changed ? { loadedAt: iso(this.clock.now()), counts: counts(catalog) } : {}),
-        },
-      };
+      const health = { ...snapshot.health.cwe, apiVersion: api.version, apiDate: api.date };
+      try {
+        const response = await acquireCwe(this.request, this.context, signal, health);
+        return await this.applyRefresh('cwe', response, snapshot.cwe, health, checkedAt);
+      } catch (cause) {
+        // Keep the successful REST observation even when the ZIP check fails.
+        this.owner.signal.throwIfAborted();
+        return {
+          catalog: snapshot.cwe,
+          changed: false,
+          health: this.failureHealth('cwe', health, cause, checkedAt),
+        };
+      }
     });
   }
 
@@ -350,28 +344,43 @@ export class CatalogService {
     const health = snapshot.health.capec;
     const checkedAt = iso(this.clock.now());
     const response = await acquireCapec(this.request, this.context, this.owner.signal, health);
-    let loaded: Partial<Loaded<CapecCatalog>>;
+    return this.applyRefresh('capec', response, snapshot.capec, health, checkedAt);
+  }
+
+  private async applyRefresh<T extends CweCatalog | CapecCatalog>(
+    source: CachedSource,
+    response: CatalogAcquisition<T>,
+    previous: T,
+    health: CatalogHealth,
+    checkedAt: string,
+  ): Promise<Refreshed<T>> {
+    const check = (now: number) => ({
+      lastCheckAt: checkedAt,
+      lastSuccessfulCheckAt: iso(now),
+      nextCheckAt: iso(now + REFRESH_INTERVALS[source]),
+    });
     if ('unchanged' in response) {
-      // A 304 keeps the served bytes and their origin, updating only the validators it returned.
       const { unchanged: _unchanged, ...validators } = response;
-      loaded = validators;
-    } else loaded = await this.save('capec', response);
-    const { catalog: candidate = snapshot.capec, ...origin } = loaded;
-    const changed =
-      candidate.version !== snapshot.capec.version || candidate.date !== snapshot.capec.date;
-    const catalog = changed ? candidate : snapshot.capec;
+      return {
+        catalog: previous,
+        changed: false,
+        health: { ...clearFailure(health), ...validators, ...check(this.clock.now()) },
+      };
+    }
+    // A 200 represents downloaded bytes even when MITRE kept the same XML version and date.
+    const { catalog, ...origin } = await this.save(source, response);
+    const now = this.clock.now();
     return {
       catalog,
-      changed,
+      changed: true,
       health: {
-        ...(loaded.catalog ? withoutValidators(clearFailure(health)) : clearFailure(health)),
+        ...withoutValidators(clearFailure(health)),
         version: catalog.version,
         date: catalog.date,
         ...origin,
-        lastCheckAt: checkedAt,
-        lastSuccessfulCheckAt: iso(this.clock.now()),
-        nextCheckAt: iso(this.clock.now() + REFRESH_INTERVALS.capec),
-        ...(changed ? { loadedAt: iso(this.clock.now()), counts: counts(catalog) } : {}),
+        ...check(now),
+        loadedAt: iso(now),
+        counts: counts(catalog),
       },
     };
   }
